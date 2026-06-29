@@ -1,0 +1,15 @@
+port: ":9090"
+enable_toon: false
+
+telemetry:
+  endpoint: ""
+  insecure: true
+
+servers:
+  - name: zentao
+    schema_url: "zentao-openapi.json 的完整路径"
+    base_url: "https://您的禅道域名/api.php/v2"
+    allow:
+      - methods: ["GET", "POST", "PUT", "DELETE"]
+        regex: ".*"
+    block: []

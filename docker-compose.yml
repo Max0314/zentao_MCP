@@ -1,0 +1,22 @@
+services:
+  zentao-mcp:
+    build:
+      context: .
+      args:
+        GOPROXY: https://goproxy.cn,direct
+    container_name: zentao-mcp
+    restart: unless-stopped
+    command: ["/zentao-mcp", "-config", "/config.yaml"]
+    ports:
+      - "7892:7892"
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+      - ./docs:/docs:ro
+    environment:
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/healthz | grep -q ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

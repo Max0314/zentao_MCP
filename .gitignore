@@ -1,0 +1,23 @@
+# Build output
+bin/
+tmp/
+.codex-backups/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+*.pem
+config.yaml
+
+# Test
+coverage.out
