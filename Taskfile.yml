@@ -27,6 +27,19 @@ tasks:
     cmds:
       - golangci-lint run ./...
 
+  # 单元测试
+  test:
+    desc: 运行单元测试
+    cmds:
+      - go vet ./...
+      - go test ./... -count=1
+
+  # 测试覆盖率
+  test:cover:
+    desc: 运行单元测试并输出覆盖率
+    cmds:
+      - go test ./... -count=1 -cover
+
   # 清理构建目录
   clean:
     desc: 清理构建目录

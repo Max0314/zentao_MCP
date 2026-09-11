@@ -112,6 +112,7 @@ func (s *Service) buildTool(ctx context.Context, doc *openapi3.T, p, method stri
 		Params:       params,
 		HasBody:      hasBody,
 		WrapOutput:   wrapOutput,
+		Deprecated:   op.Deprecated,
 	}
 }
 

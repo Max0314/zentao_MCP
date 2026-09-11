@@ -25,10 +25,24 @@ func (c *Controller) RegisterAllTools(ctx context.Context, server *mcpsdk.Server
 		return fmt.Errorf("get tools: %w", err)
 	}
 
+	registered, skipped := 0, 0
+
 	for i := range tools {
 		td := &tools[i]
 
 		if isInternalAuthTool(td.Method, td.Path) {
+			continue
+		}
+
+		if c.skipDeprecated && td.Deprecated {
+			skipped++
+
+			c.logger.InfoContext(ctx, "skipping deprecated operation",
+				"tool", td.OperationID,
+				"method", td.Method,
+				"path", td.Path,
+			)
+
 			continue
 		}
 
@@ -37,9 +51,13 @@ func (c *Controller) RegisterAllTools(ctx context.Context, server *mcpsdk.Server
 		}
 
 		c.registerTool(ctx, server, td)
+
+		registered++
 	}
 
-	c.logger.InfoContext(ctx, "tools registered")
+	c.logger.InfoContext(ctx, "tools registered", "count", registered, "skipped_deprecated", skipped)
+
+	c.RegisterZentaoTools(ctx, server)
 
 	return nil
 }
@@ -61,7 +79,7 @@ func (c *Controller) registerTool(ctx context.Context, server *mcpsdk.Server, td
 		InputSchema: td.InputSchema,
 	}
 
-	if td.OutputSchema != nil {
+	if td.OutputSchema != nil && c.publishOutputSchema {
 		t.OutputSchema = compatibleOutputSchema(td.OutputSchema)
 	}
 
@@ -126,8 +144,11 @@ func (c *Controller) toolHandler(td *models.ToolDefinition) func(context.Context
 			},
 		}
 
+		// Structured output is only valid when the tool declared an output
+		// schema. Skipping the schema also skips the normalization walk, which
+		// dominates latency on large list responses.
 		var structuredOutput any
-		if len(td.OutputSchema) > 0 && status >= 200 && status < 300 && data != nil {
+		if c.publishOutputSchema && len(td.OutputSchema) > 0 && status >= 200 && status < 300 && data != nil {
 			structuredOutput = normalizeStructuredOutput(td.OutputSchema, data)
 		}
 

@@ -80,3 +80,41 @@ func TestZentaoOpenAPIDocumentIsCalibratedFor12Point3V1(t *testing.T) {
 		t.Fatal("generated tools are missing post_executions_executionID_tasks")
 	}
 }
+
+func TestToolsCarryTheDeprecatedFlag(t *testing.T) {
+	ctx := context.Background()
+	loader := openapi3.NewLoader()
+	loader.IsExternalRefsAllowed = true
+
+	doc, err := loader.LoadFromFile(filepath.Join("..", "..", "..", "docs", "zentao-openapi.json"))
+	if err != nil {
+		t.Fatalf("load zentao openapi: %v", err)
+	}
+
+	tools, err := New(staticLoader{doc: doc}).Tools(ctx)
+	if err != nil {
+		t.Fatalf("build tools: %v", err)
+	}
+
+	var deprecated int
+	byPath := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if tool.Deprecated {
+			deprecated++
+		}
+		byPath[tool.Method+" "+tool.Path] = tool.Deprecated
+	}
+
+	if deprecated == 0 {
+		t.Fatal("no tool carried the deprecated flag, so skip_deprecated cannot hide unsupported routes")
+	}
+	if !byPath["POST /tasks"] {
+		t.Fatal("POST /tasks should be reported as deprecated")
+	}
+	if byPath["POST /executions/{executionID}/tasks"] {
+		t.Fatal("the supported create-task route must not be reported as deprecated")
+	}
+	if byPath["GET /products/{productID}/bugs"] {
+		t.Fatal("the supported product bug list must not be reported as deprecated")
+	}
+}

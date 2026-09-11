@@ -29,6 +29,26 @@ type ServerConfig struct {
 	BaseURL   string      `yaml:"base_url"`
 	Allow     []MatchRule `yaml:"allow"`
 	Block     []MatchRule `yaml:"block"`
+	// SkipDeprecated hides operations the OpenAPI document marks deprecated.
+	// The bundled ZenTao document flags routes that 12.3 v1 does not serve.
+	SkipDeprecated bool `yaml:"skip_deprecated"`
+	// ZentaoExtensions registers the composite ZenTao tools (bug search,
+	// AI score, problem analysis) for this upstream.
+	ZentaoExtensions bool `yaml:"zentao_extensions"`
+	// PublishOutputSchema declares generated output schemas. Defaults to true.
+	// On the bundled ZenTao document these schemas are ~90% of the tools/list
+	// payload, so setting it to false cuts the per-session tool cost sharply
+	// at the price of losing structured content.
+	PublishOutputSchema *bool `yaml:"publish_output_schema"`
+}
+
+// publishOutputSchema reports the effective setting, defaulting to true.
+func (s ServerConfig) publishOutputSchema() bool {
+	if s.PublishOutputSchema == nil {
+		return true
+	}
+
+	return *s.PublishOutputSchema
 }
 
 const serviceName = "openapi-mcp-server"
@@ -39,10 +59,14 @@ type TelemetryConfig struct {
 }
 
 type Config struct {
-	Port       string          `yaml:"port"`
-	EnableTOON bool            `yaml:"enable_toon"`
-	Telemetry  TelemetryConfig `yaml:"telemetry"`
-	Servers    []ServerConfig  `yaml:"servers"`
+	Port       string `yaml:"port"`
+	EnableTOON bool   `yaml:"enable_toon"`
+	// Timezone is the ZenTao server's wall-clock zone, used to turn the UTC
+	// timestamps the v1 API returns into calendar dates. Defaults to
+	// Asia/Shanghai. It applies to the whole process.
+	Timezone  string          `yaml:"timezone"`
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+	Servers   []ServerConfig  `yaml:"servers"`
 }
 
 func loadConfig(path string) (*Config, error) {

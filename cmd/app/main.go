@@ -19,6 +19,7 @@ import (
 	proxyrepo "github.com/merzzzl/openapi-mcp-server/internal/repository/proxy"
 	"github.com/merzzzl/openapi-mcp-server/internal/service/schema"
 	"github.com/merzzzl/openapi-mcp-server/internal/service/tool"
+	zentaosvc "github.com/merzzzl/openapi-mcp-server/internal/service/zentao"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -69,6 +70,16 @@ func main() {
 		}
 	}()
 
+	if err := zentaosvc.SetLocation(cfg.Timezone); err != nil {
+		slog.ErrorContext(ctx, "invalid timezone", "error", err)
+
+		exitCode = 1
+
+		return
+	}
+
+	slog.InfoContext(ctx, "zentao timezone", "location", zentaosvc.LocationName())
+
 	health := newHealthServer()
 
 	go health.Start(ctx)
@@ -108,7 +119,17 @@ func main() {
 
 		matcher := models.NewOperationMatcher(allow, block)
 
-		ctrl := mcpctrl.New(schemaSvc, toolSvc, matcher.IsAllowed, cfg.EnableTOON)
+		opts := mcpctrl.Options{
+			EnableTOON:          cfg.EnableTOON,
+			SkipDeprecated:      sc.SkipDeprecated,
+			PublishOutputSchema: sc.publishOutputSchema(),
+		}
+
+		if sc.ZentaoExtensions {
+			opts.Zentao = zentaosvc.New(proxy, sc.BaseURL)
+		}
+
+		ctrl := mcpctrl.New(schemaSvc, toolSvc, matcher.IsAllowed, opts)
 
 		server := mcp.NewServer(&mcp.Implementation{Name: sc.Name}, nil)
 

@@ -12,6 +12,8 @@
 - ️ **访问控制**：支持基于方法和路径正则的 allow/block 规则
 -  **可观测性**：内置 OpenTelemetry 链路追踪和指标收集
 -  **多服务支持**：单个实例可同时代理多个不同的 API 服务
+-  **禅道复合工具**：内置查 Bug、AI 评分、问题分析、质量统计、个人工作量等 `zentao_*` 工具，
+   详见 [docs/zentao-mcp-extensions.md](docs/zentao-mcp-extensions.md)
 
 **2. 技术栈：**
 
@@ -62,13 +64,26 @@ servers:
     schema_url: "https://b7du.corp.cc/zentao-openapi.json"
     # API 基础 URL
     base_url: "https://b7du.corp.cc/api.php/v1"
+    # 跳过 OpenAPI 中标记 deprecated 的操作（禅道文档用它标记 12.3 v1 不支持的路由）
+    skip_deprecated: true
+    # 注册 zentao_* 复合工具（只读：查 Bug、AI 评分、问题分析、质量统计、个人工作量）
+    zentao_extensions: true
     # 允许访问的规则
     allow:
       - methods: ["GET", "POST", "PUT", "DELETE"]
         regex: ".*"
-    # 禁止访问的规则
-    block: []
+    # 禁止访问的规则；正式环境建议禁用删除
+    block:
+      - methods: ["DELETE"]
+        regex: ".*"
 ```
+
+server 级可选开关：
+
+| 配置项 | 默认 | 说明 |
+| :--- | :--- | :--- |
+| `skip_deprecated` | `false` | 不注册 OpenAPI 中 `deprecated: true` 的操作。随附的禅道 12.3 文档用它标记会返回 404 的 12 个路由，开启后可减少必然失败的工具 |
+| `zentao_extensions` | `false` | 注册 6 个禅道复合工具。仅当上游确实是禅道时开启 |
 
 ### 3. 运行
 
