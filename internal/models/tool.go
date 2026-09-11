@@ -19,4 +19,7 @@ type ToolDefinition struct {
 	Params       []ToolParam
 	HasBody      bool
 	WrapOutput   bool
+	// Deprecated mirrors the OpenAPI deprecated flag. The bundled ZenTao
+	// document uses it to mark routes that ZenTao 12.3 v1 does not serve.
+	Deprecated bool
 }

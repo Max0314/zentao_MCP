@@ -90,6 +90,40 @@ env_http_headers = { token = "ZENTAO_TEST_TOKEN" }
 用 zentao-test 创建一个任务，所属执行 4058，任务名是“禅道MCP测试”，指派给陈鹏列，预计工时 5
 ```
 
+### 4.1 扩展工具（查 Bug / AI 评分 / 问题分析）
+
+除了接口级工具，服务端还提供一组只读的 `zentao_*` 复合工具，把多次调用合并成一次问答：
+
+| 工具 | 用途 |
+|---|---|
+| `zentao_resolve_scope` | 按名字找产品、项目、执行、人员的 ID |
+| `zentao_search_bugs` | 跨范围查 Bug，支持关键字、责任人、日期、严重程度过滤，并返回分布统计 |
+| `zentao_analyze_bug` | 单个 Bug 的问题分析：时间线、备注、修复时长、重新激活次数、相似 Bug |
+| `zentao_ai_score` | 查任务/Bug/需求的 AI 评分，含每条备注的评分和覆盖率 |
+| `zentao_quality_report` | 某产品/迭代的 Bug 质量统计与逐月趋势 |
+| `zentao_user_worklog` | 某人某时间段创建/完成/解决了哪些记录 |
+
+自然语言示例：
+
+```text
+用 zentao-test 查一下名字里带“数据中心”的产品 ID
+```
+
+```text
+用 zentao-test 查产品 654 里 2026 年 5 月 chenpenglie 提的、标题带“导出”的 Bug
+```
+
+```text
+用 zentao-test 分析 Bug 88123 的原因，并列出同类问题
+```
+
+```text
+用 zentao-test 看看执行 4058 最近 20 个任务的 AI 评分情况
+```
+
+需要在 `config.yaml` 中为该 server 打开 `zentao_extensions: true`。
+完整参数、返回结构和限制见 [zentao-mcp-extensions.md](zentao-mcp-extensions.md)。
+
 ## 5. 常用查询
 
 ### 查询产品列表
@@ -253,7 +287,8 @@ oneOf
 POST /executions/{executionID}/tasks
 ```
 
-如果 MCP 暴露的创建任务工具仍走 `/tasks`，需要修正 schema 或在服务端做路径兼容。
+随附的 OpenAPI 文档已经把 `POST /tasks` 等 12 个 12.3 v1 不支持的路由标记为 `deprecated`。
+在 `config.yaml` 中开启 `skip_deprecated: true` 后，这些工具不会再注册，模型也就不会选到它们。
 
 ## 10. 维护者说明
 

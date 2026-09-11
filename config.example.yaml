@@ -1,6 +1,10 @@
 port: ":9090"
 enable_toon: false
 
+# 禅道服务器时区。v1 的对象日期是 UTC，动作日期是本地时间，
+# 不换算会让凌晨 0-8 点的记录落到前一天，跨月统计出错。默认 Asia/Shanghai。
+timezone: "Asia/Shanghai"
+
 telemetry:
   endpoint: ""
   insecure: true
@@ -9,7 +13,33 @@ servers:
   - name: zentao
     schema_url: "zentao-openapi.json 的完整路径"
     base_url: "https://您的禅道域名/api.php/v2"
+    # 跳过 OpenAPI 中标记 deprecated 的接口。随附的禅道文档用它标记
+    # 12.3 v1 不支持的路由，开启后可少注册 12 个必然失败的工具。
+    skip_deprecated: true
+    # 注册 zentao_* 复合工具（查 Bug、AI 评分、问题分析、质量统计、个人工作量）。
+    # 仅当上游确实是禅道时开启。
+    zentao_extensions: true
+    # 是否声明输出 schema，默认 true。禅道文档给每个列表接口内联了约 86 字段的
+    # 对象 schema，实测占 tools/list 报文的 91.6%；设为 false 可把工具报文
+    # 从约 808 KB 降到约 67 KB，完整 JSON 仍在文本内容里返回。
+    publish_output_schema: false
+    # 历史问题检索（zentao_find_similar_bugs）。禅道 v1 没有任何文本检索接口，
+    # 所以服务端自建一份内存倒排索引：启动时拉全量 Bug，之后按 refresh 周期刷新。
+    # 实测 17,684 条 Bug：拉取约 50s、建索引约 2.4s、查询约 30ms。
+    bug_index:
+      enabled: true
+      # 建索引用的服务账号。索引里装的是这个账号能看到的全部内容，
+      # 因此查询结果永远不会直接取自索引：每条候选都会用【调用者自己的凭据】
+      # 重新读一次，读不到的直接丢弃，只回报被过滤的数量。
+      account: "索引服务账号"
+      # 口令优先从环境变量读，避免落到配置文件里
+      password_env: "ZENTAO_INDEX_PASSWORD"
+      refresh: "6h"
+      body_chars: 400
     allow:
       - methods: ["GET", "POST", "PUT", "DELETE"]
         regex: ".*"
-    block: []
+    # 正式环境建议禁用删除接口
+    block:
+      - methods: ["DELETE"]
+        regex: ".*"
