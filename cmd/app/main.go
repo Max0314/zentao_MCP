@@ -71,12 +71,15 @@ func main() {
 		}
 	}()
 
+	// A timezone that cannot be loaded must not take the proxy down: the
+	// service keeps its built-in default (Asia/Shanghai, falling back to a
+	// fixed +08:00 when the image ships no tzdata) and logs the problem.
 	if err := zentaosvc.SetLocation(cfg.Timezone); err != nil {
-		slog.ErrorContext(ctx, "invalid timezone", "error", err)
-
-		exitCode = 1
-
-		return
+		slog.WarnContext(ctx, "invalid timezone, keeping the default",
+			"requested", cfg.Timezone,
+			"using", zentaosvc.LocationName(),
+			"error", err,
+		)
 	}
 
 	slog.InfoContext(ctx, "zentao timezone", "location", zentaosvc.LocationName())
