@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/merzzzl/openapi-mcp-server/internal/repository"
+	"github.com/merzzzl/openapi-mcp-server/internal/service/bugindex"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -17,6 +18,11 @@ type Service struct {
 	logger  *slog.Logger
 	proxy   repository.Proxy
 	baseURL string
+	// index is the optional historical bug corpus. It is built under a
+	// service account and is only ever used to rank candidates; results are
+	// re-read as the calling user before anything is returned.
+	index     *bugindex.Index
+	indexOpts IndexOptions
 }
 
 // New creates a ZenTao composite Service on top of the shared proxy repository.

@@ -25,6 +25,7 @@ var (
 	errMissingScope    = errors.New("a scope id is required")
 	errUnknownObject   = errors.New("unknown object type")
 	errInvalidArgument = errors.New("invalid argument")
+	errIndexNotReady   = errors.New("index not ready")
 )
 
 // listKeys are the collection names ZenTao v1 uses to wrap list payloads.

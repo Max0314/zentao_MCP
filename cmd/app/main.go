@@ -17,6 +17,7 @@ import (
 	"github.com/merzzzl/openapi-mcp-server/internal/models"
 	oapirepo "github.com/merzzzl/openapi-mcp-server/internal/repository/openapi"
 	proxyrepo "github.com/merzzzl/openapi-mcp-server/internal/repository/proxy"
+	"github.com/merzzzl/openapi-mcp-server/internal/service/bugindex"
 	"github.com/merzzzl/openapi-mcp-server/internal/service/schema"
 	"github.com/merzzzl/openapi-mcp-server/internal/service/tool"
 	zentaosvc "github.com/merzzzl/openapi-mcp-server/internal/service/zentao"
@@ -126,7 +127,17 @@ func main() {
 		}
 
 		if sc.ZentaoExtensions {
-			opts.Zentao = zentaosvc.New(proxy, sc.BaseURL)
+			zsvc := zentaosvc.New(proxy, sc.BaseURL)
+
+			if err := attachBugIndex(ctx, zsvc, sc); err != nil {
+				slog.ErrorContext(ctx, "configure bug index", "server", sc.Name, "error", err)
+
+				exitCode = 1
+
+				return
+			}
+
+			opts.Zentao = zsvc
 		}
 
 		ctrl := mcpctrl.New(schemaSvc, toolSvc, matcher.IsAllowed, opts)
@@ -177,6 +188,46 @@ func main() {
 	if err := srv.Shutdown(sCtx); err != nil {
 		slog.ErrorContext(ctx, "failed to shutdown server", "error", err)
 	}
+}
+
+// attachBugIndex wires the historical bug corpus onto a ZenTao service and
+// starts its background builder. A missing password disables the feature with
+// a warning rather than failing startup, so the rest of the server still runs.
+func attachBugIndex(ctx context.Context, svc *zentaosvc.Service, sc *ServerConfig) error {
+	if sc.BugIndex == nil || !sc.BugIndex.Enabled {
+		return nil
+	}
+
+	refresh, err := sc.BugIndex.refreshDuration()
+	if err != nil {
+		return err
+	}
+
+	password := sc.BugIndex.resolvePassword()
+
+	if sc.BugIndex.Account == "" || password == "" {
+		slog.WarnContext(ctx, "bug index enabled but has no service account; skipping",
+			"server", sc.Name,
+			"password_env", sc.BugIndex.PasswordEnv,
+		)
+
+		return nil
+	}
+
+	svc.AttachIndex(bugindex.New(), zentaosvc.IndexOptions{
+		Account:           sc.BugIndex.Account,
+		Password:          password,
+		Refresh:           refresh,
+		BodyChars:         sc.BugIndex.BodyChars,
+		MaxProducts:       sc.BugIndex.MaxProducts,
+		MaxBugsPerProduct: sc.BugIndex.MaxBugsPerProduct,
+	})
+
+	go svc.RunIndexBuilder(ctx)
+
+	slog.InfoContext(ctx, "bug index builder started", "server", sc.Name, "account", sc.BugIndex.Account)
+
+	return nil
 }
 
 func newStreamableMCPHandler(server *mcp.Server) http.Handler {

@@ -198,6 +198,22 @@ func (c *Controller) zentaoToolSet() []zentaoTool {
 			},
 		},
 		{
+			name: "zentao_find_similar_bugs",
+			description: "按现象描述检索历史问题：输入现网设备暴露出来的现象（可含设备型号、告警、日志片段），" +
+				"返回历史上相似的 Bug 及其当时的解决方式、重新激活次数和处理人。" +
+				"适合排查现网问题时先查同类历史案例。需要服务端启用 bug_index。" +
+				"Find historical ZenTao bugs that match a reported field symptom.",
+			inputSchema: schemaFindSimilarBugs,
+			handler: func(ctx context.Context, in map[string]any) (any, error) {
+				out, err := svc.FindSimilarBugs(ctx, zentao.HistoryRequestFrom(in))
+				if err != nil {
+					return nil, err
+				}
+
+				return out, nil
+			},
+		},
+		{
 			name: "zentao_user_worklog",
 			description: "按人员和时间窗口汇总禅道工作记录：他创建/完成的任务、创建/解决的 Bug、创建/关闭的需求。" +
 				"适合核对月度工作量和上传结果。" +

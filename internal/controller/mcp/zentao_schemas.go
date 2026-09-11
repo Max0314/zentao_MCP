@@ -135,3 +135,22 @@ const schemaUserWorklog = `{
   "required": ["account"],
   "additionalProperties": false
 }`
+
+const schemaFindSimilarBugs = `{
+  "type": "object",
+  "properties": {
+    "symptom": {
+      "type": "string",
+      "description": "现象描述。尽量照抄现网反馈的原话，并带上设备型号（如 DCMG150、FXM6000）、告警码或日志片段"
+    },
+    "productID": {"type": "integer", "description": "只在该产品内查找；不传则跨全部已索引产品"},
+    "type": {"type": "string", "description": "Bug 类型，例如 codeerror、config、interface、designdefect"},
+    "resolution": {"type": "string", "description": "解决方案：fixed、postponed、bydesign、duplicate、notrepro、willnotfix"},
+    "fixedOnly": {"type": "boolean", "description": "只返回已修复（resolution=fixed）的历史问题，默认 false"},
+    "openedAfter": {"type": "string", "description": "创建日期下界 YYYY-MM-DD（含）"},
+    "openedBefore": {"type": "string", "description": "创建日期上界 YYYY-MM-DD（含）"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 25, "description": "返回条数，默认 8"}
+  },
+  "required": ["symptom"],
+  "additionalProperties": false
+}`

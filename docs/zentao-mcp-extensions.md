@@ -40,6 +40,7 @@ servers:
 | `zentao_ai_score` | 对象与备注的 AI 评分 | `objectType`、`ids` 或 `scope`+`scopeID` |
 | `zentao_quality_report` | Bug 质量统计与趋势 | `productID`/`executionID`、`month` |
 | `zentao_user_worklog` | 某人某时间段的工作记录 | `account`、`month`、`executionIDs` |
+| `zentao_find_similar_bugs` | 按现象检索历史问题（需开启 `bug_index`） | `symptom`、`productID`、`fixedOnly` |
 
 所有工具都是**只读**的，不会创建或修改禅道数据。
 
@@ -156,6 +157,48 @@ servers:
 
 与 `zentao_tool`（月度工作汇总 skill）配合时，这个工具适合在上传后做**独立复核**：
 `zentao_user_worklog` 确认记录数和归属，`zentao_ai_score` 确认备注数量与评分。
+
+### 7. zentao_find_similar_bugs —— 按现象查历史问题
+
+现网设备暴露出一个现象，想知道历史上有没有同类问题、当时怎么解决的。
+
+```text
+用 zentao-test 查一下历史上有没有类似问题：DCMG100 网关重启后上报 Inform 报文，
+DeviceInfo.SpecVersion 节点参数异常
+```
+
+**为什么需要单独的索引。** 禅道 v1 **完全没有文本检索接口**——实测
+`search`/`query`/`keyword`/`title`/`q`/`param`/`searchValue` 七个参数名全部被静默忽略，
+返回结果和不传时完全一致；`browseType` 同样是空操作。跨产品实时扫描约 50 秒，不可用。
+所以服务端自建一份内存倒排索引。
+
+**实测数据（10.70.33.19，2026-09）：**
+
+| | |
+|---|---|
+| 语料 | 17,684 个 Bug / 89 个产品 / 2022-03 起 |
+| 建索引 | 拉取约 50s + 构建约 2.4s |
+| 查询 | 约 30ms |
+| 其中已修复 | 10,453（59%） |
+
+**中文分词用二元字组，不用 trigram。** SQLite FTS5 的 trigram 分词器对两字词返回空结果
+（`重启`、`告警`、`速率` 实测 0 命中），而缺陷描述里大量是两字词。本索引把中文切成
+重叠二元字组，英数字串整体保留（`DCMG150`、`FXM6000` 这类型号不会被切碎）。
+
+**排序** = BM25 × 已修复 1.35 × codeerror 1.15 × 型号/省份精确命中 1.6。
+标题词权重是正文的两倍。标题里的 `【】` 会被抽成 facet——本语料 81% 的 Bug 带这种标签，
+里面正是设备型号、省份和运营商。
+
+**权限（重要）。** 索引由一个服务账号构建，因此装着该账号能看到的全部内容。
+查询结果**绝不直接取自索引**：排序后每条候选都会用**调用者自己的凭据**重新读一次，
+读不到的直接丢弃，只回报 `hiddenByPermission` 的数量、不回报其 ID 或内容。
+返回的每个字段都来自这次授权读取。
+
+返回内容包括标题、类型、严重程度、解决方案、解决人、重现步骤摘要、
+**当时的解决说明**（`fixNote`，取自 resolved 动作的备注）、备注数和重新激活次数。
+拿到候选后可再对最像的 1-3 条调 `zentao_analyze_bug` 看完整时间线。
+
+工具只做词面相似，不做语义判断——是否真的同一个问题，仍需人工或模型确认。
 
 ## 三：与接口级工具的关系
 
