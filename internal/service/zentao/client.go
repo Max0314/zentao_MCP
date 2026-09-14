@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/merzzzl/openapi-mcp-server/internal/middleware"
 )
 
 const (
@@ -41,10 +43,25 @@ type APIError struct {
 	Path   string
 	Status int
 	Body   string
+	// AuthFailed marks a response produced because logging in failed, rather
+	// than because the upstream refused this particular object. ZenTao uses
+	// the same status code for both.
+	AuthFailed bool
 }
 
 func (e *APIError) Error() string {
+	if e.AuthFailed {
+		return fmt.Sprintf("zentao login failed (HTTP %d): %s", e.Status, e.Body)
+	}
+
 	return fmt.Sprintf("zentao GET %s: HTTP %d: %s", e.Path, e.Status, e.Body)
+}
+
+// isAuthFailure reports whether an error came from a failed login.
+func isAuthFailure(err error) bool {
+	var apiErr *APIError
+
+	return errors.As(err, &apiErr) && apiErr.AuthFailed
 }
 
 // getJSON performs an authenticated GET against the upstream ZenTao v1 API.
@@ -84,9 +101,10 @@ func (s *Service) getJSON(ctx context.Context, apiPath string, query url.Values)
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, &APIError{
-			Path:   apiPath,
-			Status: resp.StatusCode,
-			Body:   truncate(strings.TrimSpace(string(body)), 300),
+			Path:       apiPath,
+			Status:     resp.StatusCode,
+			Body:       truncate(strings.TrimSpace(string(body)), 300),
+			AuthFailed: resp.Header.Get(middleware.AuthFailureHeader) != "",
 		}
 	}
 

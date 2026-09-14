@@ -39,7 +39,7 @@ func (t *authTransport) roundTripWithManagedToken(req *http.Request, creds Zenta
 
 	_ = resp.Body.Close()
 
-	token, err = t.tokenManager.Refresh(req.Context(), creds)
+	token, err = t.tokenManager.Refresh(req.Context(), creds, token)
 	if err != nil {
 		return loginErrorResponse(req, err)
 	}
@@ -105,6 +105,11 @@ func loginErrorResponse(req *http.Request, err error) (*http.Response, error) {
 
 	header := make(http.Header)
 	header.Set("Content-Type", "application/json")
+	// Tell callers this is a failure to authenticate, not the upstream
+	// refusing one object. ZenTao answers both with the same status code, and
+	// reporting a locked account as "you lack permission" sends people
+	// chasing access requests instead of unlocking the account.
+	header.Set(AuthFailureHeader, "1")
 
 	return &http.Response{
 		StatusCode: loginErr.StatusCode,
@@ -114,6 +119,9 @@ func loginErrorResponse(req *http.Request, err error) (*http.Response, error) {
 		Request:    req,
 	}, nil
 }
+
+// AuthFailureHeader marks a response synthesised because logging in failed.
+const AuthFailureHeader = "X-Zentao-Auth-Failed"
 
 // WithZentaoAuth wraps an HTTP client to forward legacy tokens or manage Zentao user tokens.
 func WithZentaoAuth(c *http.Client, baseURL string) *http.Client {

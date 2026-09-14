@@ -424,7 +424,12 @@ func (s *Service) FindSimilarBugs(ctx context.Context, req HistoryRequest) (*His
 		return out, nil
 	}
 
-	visible, hidden, unavailable := s.verifyHits(ctx, hits, limit)
+	visible, hidden, unavailable, authErr := s.verifyHits(ctx, hits, limit)
+	if authErr != nil && len(visible) == 0 {
+		// Fail loudly rather than returning an empty result that looks like
+		// "no history exists" or "you lack permission".
+		return nil, fmt.Errorf("cannot verify candidates as the calling account: %w", authErr)
+	}
 
 	out.Bugs = visible
 	out.Returned = len(visible)
@@ -463,7 +468,9 @@ func (s *Service) indexStatus() IndexStatus {
 
 // verifyHits re-reads ranked candidates as the calling user, in rank order,
 // stopping once enough visible records are collected.
-func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int) ([]SimilarBug, int, int) {
+func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int) ([]SimilarBug, int, int, error) {
+	var authErr error
+
 	var (
 		visible     []SimilarBug
 		hidden      int
@@ -487,9 +494,18 @@ func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int
 			}
 
 			if errs[i] != nil || records[i] == nil {
-				if isDenied(errs[i]) {
+				switch {
+				case isAuthFailure(errs[i]):
+					// Not a permission decision about this bug: the caller
+					// could not log in at all. Reporting it as "hidden" once
+					// told a user all 50 candidates were off-limits when the
+					// real cause was a locked account.
+					if authErr == nil {
+						authErr = errs[i]
+					}
+				case isDenied(errs[i]):
 					hidden++
-				} else {
+				default:
 					unavailable++
 
 					s.logger.WarnContext(ctx, "similar bug re-read failed",
@@ -513,7 +529,7 @@ func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int
 		}
 	}
 
-	return visible, hidden, unavailable
+	return visible, hidden, unavailable, authErr
 }
 
 // isDenied reports whether an upstream error means "you may not see this",
@@ -523,6 +539,13 @@ func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int
 func isDenied(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	// A failed login is not a permission decision about this bug. Counting it
+	// as one reports "you lack access" for every candidate when the real cause
+	// is a locked or mistyped account.
+	if apiErr.AuthFailed {
 		return false
 	}
 

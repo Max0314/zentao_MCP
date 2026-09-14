@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"sync/atomic"
 	"testing"
 )
 
@@ -347,5 +349,87 @@ func TestCanReplayRejectsUnrewindableBody(t *testing.T) {
 
 	if canReplay(req) {
 		t.Fatal("a body that cannot be rewound must not be replayed")
+	}
+}
+
+// A burst of concurrent 401s must produce exactly one login. Without this,
+// verifyHits' parallel reads each refreshed on their own and the resulting
+// login storm locked the user's ZenTao account.
+func TestConcurrentRefreshPerformsOneLogin(t *testing.T) {
+	var logins int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&logins, 1)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "fresh-" + strconv.Itoa(int(atomic.LoadInt32(&logins)))})
+	}))
+	defer srv.Close()
+
+	m := NewZentaoTokenManager(srv.URL, srv.Client())
+	creds := ZentaoCredentials{Account: "someone", Password: "secret"}
+
+	first, err := m.Token(context.Background(), creds)
+	if err != nil {
+		t.Fatalf("initial token: %v", err)
+	}
+
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			if _, err := m.Refresh(context.Background(), creds, first); err != nil {
+				t.Errorf("refresh: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// One login for the initial token, one for the whole refresh burst.
+	if got := atomic.LoadInt32(&logins); got != 2 {
+		t.Fatalf("logins = %d, want 2 (a burst of 401s must coalesce into one login)", got)
+	}
+}
+
+// A rejected login must not be retried on the next request: ZenTao restarts its
+// lock timer on every failed attempt, so retrying keeps a locked account locked.
+func TestRejectedLoginBacksOff(t *testing.T) {
+	var attempts int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"您还有2次尝试机会。"}`))
+	}))
+	defer srv.Close()
+
+	m := NewZentaoTokenManager(srv.URL, srv.Client())
+	creds := ZentaoCredentials{Account: "someone", Password: "wrong"}
+
+	for range 5 {
+		if _, err := m.Token(context.Background(), creds); err == nil {
+			t.Fatal("expected the login to fail")
+		}
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("login attempts = %d, want 1; further attempts keep the account locked", got)
+	}
+
+	// The backoff must expire rather than wedge the account out permanently.
+	m.mu.Lock()
+	m.now = func() time.Time { return time.Now().Add(2 * loginBackoffMax) }
+	m.mu.Unlock()
+
+	if _, err := m.Token(context.Background(), creds); err == nil {
+		t.Fatal("expected the login to fail")
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("login attempts after the backoff = %d, want 2", got)
 	}
 }
