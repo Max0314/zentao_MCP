@@ -14,6 +14,11 @@ services:
       - ./docs:/docs:ro
     environment:
       TZ: Asia/Shanghai
+      # 历史问题检索索引的服务账号口令，由同目录 .env 提供（权限 600）：
+      #   echo 'ZENTAO_INDEX_PASSWORD=xxx' > .env && chmod 600 .env
+      # 未设置时为空，服务端只会跳过建索引并告警，不影响其他功能。
+      # 必须放在这里而不是只改服务器上的文件：部署会用仓库版本覆盖本文件。
+      ZENTAO_INDEX_PASSWORD: ${ZENTAO_INDEX_PASSWORD:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/healthz | grep -q ok"]
       interval: 30s
