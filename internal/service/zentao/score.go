@@ -72,12 +72,10 @@ type ScoreRequest struct {
 }
 
 // ScoreRequestFrom decodes tool arguments into an AI score request.
-func ScoreRequestFrom(in map[string]any) ScoreRequest {
+func ScoreRequestFrom(in map[string]any) (ScoreRequest, error) {
 	req := ScoreRequest{
 		ObjectType:    strings.ToLower(argString(in, "objectType", "type")),
 		IDs:           argInts(in, "ids", "id"),
-		Scope:         normalizeScope(argString(in, "scope")),
-		ScopeID:       argInt(in, "scopeID", 0),
 		Limit:         clamp(argInt(in, "limit", defaultScoreBatch), 1, maxScoreBatch),
 		IncludeDetail: argBool(in, "includeComments", true),
 	}
@@ -86,28 +84,23 @@ func ScoreRequestFrom(in map[string]any) ScoreRequest {
 		req.ObjectType = "task"
 	}
 
-	if req.ScopeID == 0 {
-		req.ScopeID = argInt(in, "executionID", 0)
-		if req.ScopeID > 0 && req.Scope == "" {
-			req.Scope = "execution"
-		}
+	if _, _, err := resolveObject(req.ObjectType); err != nil {
+		return ScoreRequest{}, err
 	}
 
-	if req.ScopeID == 0 {
-		req.ScopeID = argInt(in, "productID", 0)
-		if req.ScopeID > 0 && req.Scope == "" {
-			req.Scope = "product"
-		}
+	// A scope is only needed when no explicit ids were given.
+	if len(req.IDs) > 0 {
+		return req, nil
 	}
 
-	if req.ScopeID == 0 {
-		req.ScopeID = argInt(in, "projectID", 0)
-		if req.ScopeID > 0 && req.Scope == "" {
-			req.Scope = "project"
-		}
+	scope, scopeID, err := scopeSelector(in, "")
+	if err != nil {
+		return ScoreRequest{}, err
 	}
 
-	return req
+	req.Scope, req.ScopeID = scope, scopeID
+
+	return req, nil
 }
 
 // AIScores reads ZenTao AI scores for objects and their scoreable comments.
@@ -197,15 +190,9 @@ func (s *Service) scoreScopeIDs(ctx context.Context, req ScoreRequest) ([]int, s
 		return nil, "", fmt.Errorf("%w: pass ids, or a scope plus scopeID", errInvalidArgument)
 	}
 
-	collection := "tasks"
-
-	switch strings.ToLower(req.ObjectType) {
-	case "bug", "bugs":
-		collection = "bugs"
-	case "story", "stories":
-		collection = "stories"
-	case "testcase", "testcases", "case":
-		collection = "testcases"
+	collection, _, err := resolveObject(req.ObjectType)
+	if err != nil {
+		return nil, "", err
 	}
 
 	apiPath, err := collectionPath(req.Scope, req.ScopeID, collection)

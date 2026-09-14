@@ -8,8 +8,13 @@ import (
 var (
 	hanPattern    = regexp.MustCompile(`\p{Han}+`)
 	latinPattern  = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_.\-]*`)
-	bracketTag    = regexp.MustCompile(`【([^】]{1,40})】`)
-	tagPattern    = regexp.MustCompile(`(?s)<[^>]*>`)
+	bracketTag = regexp.MustCompile(`【([^】]{1,40})】`)
+	// A tag must start with a letter or a closing slash. `<[^>]*>` also matched
+	// a literal comparison such as "温度 < 60 摄氏度\n[实测] 温度 > 85" and deleted
+	// the whole span between the two operators, which is routine in device
+	// reports (丢包率<1%, 响应<3秒) and silently removed it from the index.
+	commentPattern = regexp.MustCompile(`(?s)<!--.*?-->`)
+	tagPattern     = regexp.MustCompile(`(?s)</?[A-Za-z][^>]*>`)
 	spacePattern  = regexp.MustCompile(`\s+`)
 	minLatinToken = 2
 )
@@ -37,14 +42,17 @@ func Tokenize(text string) []string {
 	for _, run := range hanPattern.FindAllString(text, -1) {
 		r := []rune(run)
 
-		if len(r) == 1 {
-			out = append(out, string(r))
+		// Emit unigrams AND bigrams on both the index and the query path.
+		// Emitting only bigrams for multi-character runs and only a unigram for
+		// single-character runs made the two vocabularies disjoint: a query for
+		// 停 could never match a document containing 风扇停转, and a lone 停 in a
+		// document could never be retrieved by any multi-character query.
+		for i := range r {
+			out = append(out, string(r[i]))
 
-			continue
-		}
-
-		for i := 0; i+1 < len(r); i++ {
-			out = append(out, string(r[i:i+2]))
+			if i+1 < len(r) {
+				out = append(out, string(r[i:i+2]))
+			}
 		}
 	}
 
@@ -82,6 +90,7 @@ func PlainText(s string) string {
 		s = strings.ReplaceAll(s, br, " ")
 	}
 
+	s = commentPattern.ReplaceAllString(s, " ")
 	s = tagPattern.ReplaceAllString(s, " ")
 	s = strings.NewReplacer("&nbsp;", " ", "&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`).Replace(s)
 

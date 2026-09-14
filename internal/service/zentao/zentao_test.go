@@ -69,7 +69,7 @@ func TestSearchBugsFiltersByOwnerAndMonth(t *testing.T) {
 		"/api.php/v1/products/654/bugs": productBugsBody,
 	})
 
-	req := BugSearchRequestFrom(map[string]any{
+	req := mustSearchReq(t, map[string]any{
 		"productID": float64(654),
 		"openedBy":  "chenpenglie",
 		"month":     "2026-05",
@@ -103,7 +103,7 @@ func TestSearchBugsMatchesRealName(t *testing.T) {
 	})
 
 	// Only bug 101 carries a realname on its openedBy reference.
-	req := BugSearchRequestFrom(map[string]any{
+	req := mustSearchReq(t, map[string]any{
 		"productID": float64(654),
 		"openedBy":  "陈鹏列",
 	})
@@ -127,7 +127,7 @@ func TestSearchBugsKeywordSearchesSteps(t *testing.T) {
 		"/api.php/v1/products/654/bugs": productBugsBody,
 	})
 
-	req := BugSearchRequestFrom(map[string]any{
+	req := mustSearchReq(t, map[string]any{
 		"productID": float64(654),
 		"keyword":   "点击保存",
 	})
@@ -145,7 +145,7 @@ func TestSearchBugsKeywordSearchesSteps(t *testing.T) {
 func TestSearchBugsRequiresIDForNonProductScope(t *testing.T) {
 	svc, _ := newTestService(map[string]string{})
 
-	req := BugSearchRequestFrom(map[string]any{"scope": "execution"})
+	req := mustSearchReq(t, map[string]any{"scope": "execution"})
 
 	if _, err := svc.SearchBugs(context.Background(), req); err == nil {
 		t.Fatal("expected an error when an execution search carries no id")
@@ -177,7 +177,7 @@ func TestAnalyzeBugBuildsTimelineAndMetrics(t *testing.T) {
 		"/api.php/v1/products/654/bugs": productBugsBody,
 	})
 
-	out, err := svc.AnalyzeBug(context.Background(), 101, true, 5, 0)
+	out, err := svc.AnalyzeBug(context.Background(), AnalyzeRequest{BugID: 101, IncludeRelated: true, RelatedLimit: 5})
 	if err != nil {
 		t.Fatalf("AnalyzeBug: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestAIScoresReportsCoverage(t *testing.T) {
 		"/api.php/v1/bugs/101": bugDetailBody,
 	})
 
-	res, err := svc.AIScores(context.Background(), ScoreRequestFrom(map[string]any{
+	res, err := svc.AIScores(context.Background(), mustScoreReq(t, map[string]any{
 		"objectType": "bug",
 		"ids":        []any{float64(101)},
 	}))
@@ -269,7 +269,7 @@ func TestAIScoresReportsCoverage(t *testing.T) {
 func TestAIScoresReportsUpstreamErrorPerObject(t *testing.T) {
 	svc, _ := newTestService(map[string]string{})
 
-	res, err := svc.AIScores(context.Background(), ScoreRequestFrom(map[string]any{
+	res, err := svc.AIScores(context.Background(), mustScoreReq(t, map[string]any{
 		"objectType": "task",
 		"ids":        "555",
 	}))
@@ -291,7 +291,7 @@ func TestQualityReportAggregates(t *testing.T) {
 		"/api.php/v1/products/654/bugs": productBugsBody,
 	})
 
-	res, err := svc.QualityReportFor(context.Background(), ReportRequestFrom(map[string]any{
+	res, err := svc.QualityReportFor(context.Background(), mustReportReq(t, map[string]any{
 		"productID": float64(654),
 	}))
 	if err != nil {
@@ -338,7 +338,7 @@ func TestUserWorklogCollectsRoles(t *testing.T) {
 		"/api.php/v1/executions/4058/tasks": executionTasksBody,
 	})
 
-	res, err := svc.UserWorklog(context.Background(), WorklogRequestFrom(map[string]any{
+	res, err := svc.UserWorklog(context.Background(), mustWorklogReq(t, map[string]any{
 		"account":     "chenpenglie",
 		"month":       "2026-05",
 		"executionID": float64(4058),
@@ -365,7 +365,7 @@ func TestUserWorklogCollectsRoles(t *testing.T) {
 func TestUserWorklogRequiresScope(t *testing.T) {
 	svc, _ := newTestService(map[string]string{})
 
-	_, err := svc.UserWorklog(context.Background(), WorklogRequestFrom(map[string]any{"account": "chenpenglie"}))
+	_, err := svc.UserWorklog(context.Background(), mustWorklogReq(t, map[string]any{"account": "chenpenglie"}))
 	if err == nil {
 		t.Fatal("expected an error when no scope id is given")
 	}
@@ -384,7 +384,7 @@ func TestResolveScopeMatchesByName(t *testing.T) {
 		"/api.php/v1/products": productsBody,
 	})
 
-	res, err := svc.ResolveScope(context.Background(), ResolveRequestFrom(map[string]any{
+	res, err := svc.ResolveScope(context.Background(), mustResolveReq(t, map[string]any{
 		"keyword": "BI",
 		"kinds":   []any{"product"},
 	}))
@@ -404,7 +404,7 @@ func TestResolveScopeMatchesByName(t *testing.T) {
 func TestResolveScopeReportsFailedKind(t *testing.T) {
 	svc, _ := newTestService(map[string]string{})
 
-	res, err := svc.ResolveScope(context.Background(), ResolveRequestFrom(map[string]any{
+	res, err := svc.ResolveScope(context.Background(), mustResolveReq(t, map[string]any{
 		"keyword": "任意",
 		"kinds":   []any{"product"},
 	}))
@@ -453,7 +453,7 @@ func TestSearchBugsMonthFilterUsesZentaoLocalDate(t *testing.T) {
 		"/api.php/v1/products/654/bugs": midnightBugsBody,
 	})
 
-	res, err := svc.SearchBugs(context.Background(), BugSearchRequestFrom(map[string]any{
+	res, err := svc.SearchBugs(context.Background(), mustSearchReq(t, map[string]any{
 		"productID": float64(654),
 		"month":     "2026-09",
 	}))
@@ -499,4 +499,60 @@ func TestActionInsightsReadsCommentScoreField(t *testing.T) {
 	if comments[0].Comment != "【任务完成步骤】盘点范围" {
 		t.Fatalf("comment text = %q, want the HTML stripped", comments[0].Comment)
 	}
+}
+
+// Decoders return (request, error); these keep the table tests readable.
+func mustSearchReq(t *testing.T, in map[string]any) BugSearchRequest {
+	t.Helper()
+
+	req, err := BugSearchRequestFrom(in)
+	if err != nil {
+		t.Fatalf("BugSearchRequestFrom(%v): %v", in, err)
+	}
+
+	return req
+}
+
+func mustScoreReq(t *testing.T, in map[string]any) ScoreRequest {
+	t.Helper()
+
+	req, err := ScoreRequestFrom(in)
+	if err != nil {
+		t.Fatalf("ScoreRequestFrom(%v): %v", in, err)
+	}
+
+	return req
+}
+
+func mustReportReq(t *testing.T, in map[string]any) ReportRequest {
+	t.Helper()
+
+	req, err := ReportRequestFrom(in)
+	if err != nil {
+		t.Fatalf("ReportRequestFrom(%v): %v", in, err)
+	}
+
+	return req
+}
+
+func mustWorklogReq(t *testing.T, in map[string]any) WorklogRequest {
+	t.Helper()
+
+	req, err := WorklogRequestFrom(in)
+	if err != nil {
+		t.Fatalf("WorklogRequestFrom(%v): %v", in, err)
+	}
+
+	return req
+}
+
+func mustResolveReq(t *testing.T, in map[string]any) ResolveRequest {
+	t.Helper()
+
+	req, err := ResolveRequestFrom(in)
+	if err != nil {
+		t.Fatalf("ResolveRequestFrom(%v): %v", in, err)
+	}
+
+	return req
 }

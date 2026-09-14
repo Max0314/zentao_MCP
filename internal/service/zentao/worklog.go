@@ -59,11 +59,9 @@ type WorklogRequest struct {
 }
 
 // WorklogRequestFrom decodes tool arguments into a worklog request.
-func WorklogRequestFrom(in map[string]any) WorklogRequest {
+func WorklogRequestFrom(in map[string]any) (WorklogRequest, error) {
 	req := WorklogRequest{
 		Account:      argString(in, "account", "user"),
-		From:         normalizeDay(argString(in, "from", "after")),
-		To:           normalizeDay(argString(in, "to", "before")),
 		ExecutionIDs: argInts(in, "executionIDs", "executionID"),
 		ProductIDs:   argInts(in, "productIDs", "productID"),
 		ProjectIDs:   argInts(in, "projectIDs", "projectID"),
@@ -71,15 +69,28 @@ func WorklogRequestFrom(in map[string]any) WorklogRequest {
 		MaxScan:      clamp(argInt(in, "maxScan", defaultWorklogScan), 1, maxWorklogScan),
 	}
 
-	if month := argString(in, "month"); month != "" {
-		if from, to, ok := monthRange(month); ok {
-			if req.From == "" {
-				req.From = from
-			}
+	var err error
 
-			if req.To == "" {
-				req.To = to
-			}
+	if req.From, err = normalizeDay("from", argString(in, "from", "after")); err != nil {
+		return WorklogRequest{}, err
+	}
+
+	if req.To, err = normalizeDay("to", argString(in, "to", "before")); err != nil {
+		return WorklogRequest{}, err
+	}
+
+	from, to, err := monthWindow(argString(in, "month"))
+	if err != nil {
+		return WorklogRequest{}, err
+	}
+
+	if from != "" {
+		if req.From == "" {
+			req.From = from
+		}
+
+		if req.To == "" {
+			req.To = to
 		}
 	}
 
@@ -98,7 +109,7 @@ func WorklogRequestFrom(in map[string]any) WorklogRequest {
 		req.Kinds = []string{"task", "bug", "story"}
 	}
 
-	return req
+	return req, nil
 }
 
 // UserWorklog lists what one account opened, finished or resolved in a window.

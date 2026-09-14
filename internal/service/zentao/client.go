@@ -249,20 +249,106 @@ func collectionPath(scope string, id int, collection string) (string, error) {
 	return fmt.Sprintf("/%ss/%d/%s", scope, id, collection), nil
 }
 
-// objectPath maps an object type to its detail path and payload wrapper key.
-func objectPath(objectType string, id int) (string, string, error) {
+// resolveObject maps an object type alias to its collection name and payload
+// wrapper key. One table, so a list read and a detail read can never disagree
+// about what an alias such as "requirement" means.
+func resolveObject(objectType string) (string, string, error) {
 	switch strings.ToLower(strings.TrimSpace(objectType)) {
 	case "bug", "bugs":
-		return fmt.Sprintf("/bugs/%d", id), "bug", nil
+		return "bugs", "bug", nil
 	case "task", "tasks":
-		return fmt.Sprintf("/tasks/%d", id), "task", nil
-	case "story", "stories", "requirement":
-		return fmt.Sprintf("/stories/%d", id), "story", nil
+		return "tasks", "task", nil
+	case "story", "stories", "requirement", "requirements":
+		return "stories", "story", nil
 	case "testcase", "testcases", "case":
-		return fmt.Sprintf("/testcases/%d", id), "testcase", nil
+		return "testcases", "testcase", nil
 	}
 
 	return "", "", fmt.Errorf("%w: %q (use bug, task, story or testcase)", errUnknownObject, objectType)
+}
+
+// objectPath maps an object type to its detail path and payload wrapper key.
+func objectPath(objectType string, id int) (string, string, error) {
+	collection, wrapKey, err := resolveObject(objectType)
+	if err != nil {
+		return "", "", err
+	}
+
+	return fmt.Sprintf("/%s/%d", collection, id), wrapKey, nil
+}
+
+// scopeAliases maps a tool argument name to the scope it implies.
+var scopeAliases = []struct {
+	arg   string
+	scope string
+}{
+	{arg: "productID", scope: "product"},
+	{arg: "projectID", scope: "project"},
+	{arg: "executionID", scope: "execution"},
+}
+
+// scopeSelector resolves the scope and its id from the canonical scope/scopeID
+// pair plus the productID/projectID/executionID aliases.
+//
+// The scope always comes from whichever alias supplied the id, so the two can
+// never disagree. Resolving them independently previously let
+// {"productID":10,"executionID":55} scan /executions/10/bugs - a real endpoint
+// returning a real but unrelated bug list, with no error.
+func scopeSelector(in map[string]any, defaultScope string) (string, int, error) {
+	scope := normalizeScope(argString(in, "scope"))
+	id := argInt(in, "scopeID", 0)
+
+	var (
+		aliasScope string
+		aliasID    int
+		seen       []string
+	)
+
+	for _, alias := range scopeAliases {
+		v := argInt(in, alias.arg, 0)
+		if v <= 0 {
+			continue
+		}
+
+		seen = append(seen, alias.arg)
+		aliasScope, aliasID = alias.scope, v
+	}
+
+	if len(seen) > 1 {
+		return "", 0, fmt.Errorf("%w: %s were given together; pass exactly one scope",
+			errInvalidArgument, strings.Join(seen, " and "))
+	}
+
+	if aliasID > 0 {
+		if id > 0 && id != aliasID {
+			return "", 0, fmt.Errorf("%w: scopeID=%d conflicts with %s=%d",
+				errInvalidArgument, id, seen[0], aliasID)
+		}
+
+		if scope != "" && scope != aliasScope {
+			return "", 0, fmt.Errorf("%w: scope=%q conflicts with %s",
+				errInvalidArgument, scope, seen[0])
+		}
+
+		return aliasScope, aliasID, nil
+	}
+
+	if scope == "" {
+		scope = defaultScope
+	}
+
+	// No scope at all and none required: the caller decides whether that is an
+	// error, so it can explain what else it would have accepted.
+	if scope == "" && id == 0 {
+		return "", 0, nil
+	}
+
+	switch scope {
+	case "product", "project", "execution":
+		return scope, id, nil
+	}
+
+	return "", 0, fmt.Errorf("%w: %q (use product, project or execution)", errUnknownScope, scope)
 }
 
 // normalizeScope maps user supplied scope aliases to canonical scope names.

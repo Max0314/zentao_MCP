@@ -47,18 +47,14 @@ type Query struct {
 // Hit is one ranked candidate. It carries only identifying and ranking data;
 // the caller is expected to re-read the record with the end user's own
 // credentials before showing any content.
+// The corpus is built by a service account, so a Hit deliberately carries no
+// content: title, product name, status and tags stay inside the index and the
+// caller re-reads them under its own credentials. MatchedKeys is the caller's
+// own query terms, and is only ever surfaced for a record that passed that
+// re-read.
 type Hit struct {
 	ID          int
 	Score       float64
-	Product     int
-	ProductName string
-	Title       string
-	Type        string
-	Status      string
-	Resolution  string
-	Severity    int
-	OpenedDate  string
-	Tags        []string
 	MatchedKeys []string
 }
 
@@ -126,7 +122,19 @@ func (ix *Index) Search(q Query) ([]Hit, Stats) {
 	stats.Candidates = len(scores)
 
 	queryKeys := queryBoostKeys(q.Text)
-	hits := make([]Hit, 0, minInt(len(scores), candidatePool))
+
+	// Hoisted out of the loop: intersect() rebuilt this set for every candidate
+	// document, and a common bigram produces thousands of candidates.
+	want := make(map[string]struct{}, len(queryKeys))
+	for _, k := range queryKeys {
+		want[k] = struct{}{}
+	}
+
+	// Rank on a lightweight (slot, score) pair and materialise a full Hit only
+	// for the survivors. Building a Hit per matching document copied the title
+	// and two slices each time; a corpus-wide bigram such as 设备 matches most
+	// records, so one query allocated and sorted ~17k of them to return 8.
+	ranked := make([]scored, 0, minInt(len(scores), candidatePool))
 
 	for slot, score := range scores {
 		doc := &snap.docs[slot]
@@ -134,8 +142,6 @@ func (ix *Index) Search(q Query) ([]Hit, Stats) {
 		if !doc.passes(q) {
 			continue
 		}
-
-		matched := intersect(snap.keys[slot], queryKeys)
 
 		if q.PreferFixed && strings.EqualFold(doc.Resolution, "fixed") {
 			score *= boostFixed
@@ -145,41 +151,61 @@ func (ix *Index) Search(q Query) ([]Hit, Stats) {
 			score *= boostCodeError
 		}
 
-		if len(matched) > 0 {
+		if intersects(snap.keys[slot], want) {
 			score *= boostExactKey
 		}
 
-		hits = append(hits, Hit{
-			ID:          doc.ID,
-			Score:       math.Round(score*100) / 100,
-			Product:     doc.Product,
-			ProductName: doc.ProductName,
-			Title:       doc.Title,
-			Type:        doc.Type,
-			Status:      doc.Status,
-			Resolution:  doc.Resolution,
-			Severity:    doc.Severity,
-			OpenedDate:  doc.OpenedDate,
-			Tags:        doc.Tags,
-			MatchedKeys: matched,
-		})
+		ranked = append(ranked, scored{slot: slot, score: score})
 	}
 
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].Score != hits[j].Score {
-			return hits[i].Score > hits[j].Score
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
 		}
 
-		return hits[i].ID > hits[j].ID
+		return snap.docs[ranked[i].slot].ID > snap.docs[ranked[j].slot].ID
 	})
 
-	if len(hits) > limit {
-		hits = hits[:limit]
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+
+	hits := make([]Hit, 0, len(ranked))
+
+	for _, r := range ranked {
+		doc := &snap.docs[r.slot]
+
+		hits = append(hits, Hit{
+			ID:          doc.ID,
+			Score:       math.Round(r.score*100) / 100,
+			MatchedKeys: intersect(snap.keys[r.slot], queryKeys),
+		})
 	}
 
 	stats.Returned = len(hits)
 
 	return hits, stats
+}
+
+// scored is the ranking pair: a document slot and its boosted score.
+type scored struct {
+	slot  uint32
+	score float64
+}
+
+// intersects reports whether any document key is in the query key set.
+func intersects(docKeys []string, want map[string]struct{}) bool {
+	if len(docKeys) == 0 || len(want) == 0 {
+		return false
+	}
+
+	for _, k := range docKeys {
+		if _, ok := want[k]; ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 // passes applies the exact filters of a query to one document.
@@ -215,8 +241,17 @@ func (d *Doc) passes(q Query) bool {
 // anything the reporter wrote in brackets, plus latin runs such as a model
 // number pasted straight out of an alarm.
 func queryBoostKeys(text string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, 4)
+	return dedupedKeys(ExtractTags(text), text)
+}
+
+// dedupedKeys builds the exact-match handles of a record or a query: the
+// bracketed tags (device model, province, carrier) plus the latin runs of the
+// title. Index side and query side must use one implementation - when only the
+// query side enforced the minimum length, a short key written into the index
+// could never be matched and its boost silently never fired.
+func dedupedKeys(tags []string, title string) []string {
+	seen := make(map[string]struct{}, len(tags)+4)
+	out := make([]string, 0, len(tags)+4)
 
 	add := func(s string) {
 		s = normalizeKey(s)
@@ -232,11 +267,11 @@ func queryBoostKeys(text string) []string {
 		out = append(out, s)
 	}
 
-	for _, t := range ExtractTags(text) {
+	for _, t := range tags {
 		add(t)
 	}
 
-	for _, t := range latinPattern.FindAllString(text, -1) {
+	for _, t := range latinPattern.FindAllString(title, -1) {
 		add(t)
 	}
 

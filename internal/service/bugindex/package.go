@@ -65,8 +65,14 @@ func New() *Index {
 
 // Replace atomically installs a new generation built from docs.
 func (ix *Index) Replace(docs []Doc) {
+	// Build outside the lock. Tokenizing a 17k document corpus takes seconds,
+	// and doing it inside the critical section stalled every concurrent search
+	// for that whole window - Go's RWMutex also blocks new readers once a
+	// writer is waiting, so requests arriving just before a refresh queued up.
+	snap := build(docs)
+
 	ix.mu.Lock()
-	ix.snap = build(docs)
+	ix.snap = snap
 	ix.mu.Unlock()
 }
 
@@ -173,30 +179,5 @@ func build(docs []Doc) *snapshot {
 // the latin runs of its title. In this corpus those carry the device model,
 // the province and the carrier, so an exact hit on one is a strong signal.
 func boostKeys(d Doc) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, 6)
-
-	add := func(s string) {
-		s = normalizeKey(s)
-		if s == "" {
-			return
-		}
-
-		if _, ok := seen[s]; ok {
-			return
-		}
-
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-
-	for _, t := range d.Tags {
-		add(t)
-	}
-
-	for _, t := range latinPattern.FindAllString(d.Title, -1) {
-		add(t)
-	}
-
-	return out
+	return dedupedKeys(d.Tags, d.Title)
 }

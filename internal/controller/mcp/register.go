@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/merzzzl/openapi-mcp-server/internal/models"
@@ -119,9 +121,14 @@ func (c *Controller) toolHandler(td *models.ToolDefinition) func(context.Context
 
 		text := string(body)
 
-		var data any
+		var (
+			data    any
+			decoded bool
+		)
 
 		if err := json.Unmarshal(body, &data); err == nil {
+			decoded = true
+
 			if td.WrapOutput && status >= 200 && status < 300 {
 				data = map[string]any{"result": data}
 			}
@@ -137,7 +144,28 @@ func (c *Controller) toolHandler(td *models.ToolDefinition) func(context.Context
 			}
 		}
 
+		// Report upstream failures as failures.
+		//
+		// ZenTao serves an unsupported route as HTTP 200 carrying a PHP fatal
+		// error page, and a broken one as 4xx/5xx. Neither was marked as an
+		// error, so a model saw "HTTP 500" plus an error page as a successful
+		// call and could conclude that a task had been created. A non-2xx
+		// status, or a 2xx whose body is neither JSON nor empty, is an error.
+		failed := status < http.StatusOK || status >= http.StatusMultipleChoices
+		if !failed && !decoded && len(bytes.TrimSpace(body)) > 0 {
+			failed = true
+		}
+
+		if failed {
+			c.logger.WarnContext(ctx, "upstream call reported as tool error",
+				"tool", td.OperationID,
+				"status", status,
+				"json_body", decoded,
+			)
+		}
+
 		res := &mcpsdk.CallToolResult{
+			IsError: failed,
 			Content: []mcpsdk.Content{
 				&mcpsdk.TextContent{Text: fmt.Sprintf("HTTP %d", status)},
 				&mcpsdk.TextContent{Text: text},

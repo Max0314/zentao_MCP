@@ -85,61 +85,118 @@ type BugSearchResult struct {
 }
 
 // BugSearchRequestFrom decodes tool arguments into a search request.
-func BugSearchRequestFrom(in map[string]any) BugSearchRequest {
+func BugSearchRequestFrom(in map[string]any) (BugSearchRequest, error) {
+	scope, scopeID, err := scopeSelector(in, "product")
+	if err != nil {
+		return BugSearchRequest{}, err
+	}
+
 	req := BugSearchRequest{
-		Scope:          normalizeScope(argString(in, "scope")),
-		ScopeID:        argInt(in, "scopeID", 0),
-		ScopeIDs:       argInts(in, "scopeIDs", "productIDs"),
-		Keyword:        argString(in, "keyword"),
-		Status:         strings.ToLower(argString(in, "status")),
-		Resolution:     strings.ToLower(argString(in, "resolution")),
-		Type:           strings.ToLower(argString(in, "type")),
-		Severity:       argInt(in, "severity", 0),
-		Pri:            argInt(in, "pri", 0),
-		Module:         argInt(in, "module", 0),
-		AssignedTo:     argString(in, "assignedTo"),
-		OpenedBy:       argString(in, "openedBy"),
-		ResolvedBy:     argString(in, "resolvedBy"),
-		OpenedAfter:    normalizeDay(argString(in, "openedAfter")),
-		OpenedBefore:   normalizeDay(argString(in, "openedBefore")),
-		ResolvedAfter:  normalizeDay(argString(in, "resolvedAfter")),
-		ResolvedBefore: normalizeDay(argString(in, "resolvedBefore")),
-		Month:          argString(in, "month"),
-		OrderBy:        argString(in, "orderBy"),
-		Limit:          clamp(argInt(in, "limit", defaultBugLimit), 1, maxBugLimit),
-		MaxScan:        clamp(argInt(in, "maxScan", defaultBugScan), 1, maxBugScan),
+		Scope:      scope,
+		ScopeID:    scopeID,
+		ScopeIDs:   argInts(in, "scopeIDs", "productIDs"),
+		Keyword:    argString(in, "keyword"),
+		Status:     strings.ToLower(argString(in, "status")),
+		Resolution: strings.ToLower(argString(in, "resolution")),
+		Type:       strings.ToLower(argString(in, "type")),
+		Severity:   argInt(in, "severity", 0),
+		Pri:        argInt(in, "pri", 0),
+		Module:     argInt(in, "module", 0),
+		AssignedTo: argString(in, "assignedTo"),
+		OpenedBy:   argString(in, "openedBy"),
+		ResolvedBy: argString(in, "resolvedBy"),
+		Month:      argString(in, "month"),
+		OrderBy:    argString(in, "orderBy"),
+		Limit:      clamp(argInt(in, "limit", defaultBugLimit), 1, maxBugLimit),
+		MaxScan:    clamp(argInt(in, "maxScan", defaultBugScan), 1, maxBugScan),
 	}
 
-	if req.ScopeID == 0 {
-		req.ScopeID = argInt(in, "productID", 0)
+	bounds := []struct {
+		name string
+		dst  *string
+	}{
+		{name: "openedAfter", dst: &req.OpenedAfter},
+		{name: "openedBefore", dst: &req.OpenedBefore},
+		{name: "resolvedAfter", dst: &req.ResolvedAfter},
+		{name: "resolvedBefore", dst: &req.ResolvedBefore},
 	}
 
-	if req.ScopeID == 0 {
-		req.ScopeID = argInt(in, "projectID", 0)
-	}
-
-	if req.ScopeID == 0 {
-		req.ScopeID = argInt(in, "executionID", 0)
-	}
-
-	if req.Scope == "" {
-		switch {
-		case argInt(in, "executionID", 0) > 0:
-			req.Scope = "execution"
-		case argInt(in, "projectID", 0) > 0:
-			req.Scope = "project"
-		default:
-			req.Scope = "product"
+	for _, b := range bounds {
+		day, err := normalizeDay(b.name, argString(in, b.name))
+		if err != nil {
+			return BugSearchRequest{}, err
 		}
+
+		*b.dst = day
 	}
 
-	if req.Month != "" {
-		if from, to, ok := monthRange(req.Month); ok && req.OpenedAfter == "" && req.OpenedBefore == "" {
-			req.OpenedAfter, req.OpenedBefore = from, to
+	from, to, err := monthWindow(req.Month)
+	if err != nil {
+		return BugSearchRequest{}, err
+	}
+
+	if from != "" && req.OpenedAfter == "" && req.OpenedBefore == "" {
+		req.OpenedAfter, req.OpenedBefore = from, to
+	}
+
+	return req, nil
+}
+
+// parseOrderBy splits ZenTao's "<field>_<asc|desc>" ordering argument.
+func parseOrderBy(orderBy string) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(orderBy))
+	if s == "" {
+		return "id", true
+	}
+
+	if trimmed, ok := strings.CutSuffix(s, "_asc"); ok {
+		return trimmed, false
+	}
+
+	if trimmed, ok := strings.CutSuffix(s, "_desc"); ok {
+		return trimmed, true
+	}
+
+	return s, true
+}
+
+// sortBugs applies the caller's requested ordering.
+//
+// Matches are merged from several scopes, so the upstream orderBy only decides
+// which records were scanned; without this the result was always re-sorted by
+// descending id and a requested severity_asc was silently ignored.
+func sortBugs(bugs []BugSummary, orderBy string) {
+	name, desc := parseOrderBy(orderBy)
+
+	sort.SliceStable(bugs, func(i, j int) bool {
+		c := compareBugs(&bugs[i], &bugs[j], name)
+		if c == 0 {
+			return bugs[i].ID > bugs[j].ID
 		}
-	}
 
-	return req
+		if desc {
+			return c > 0
+		}
+
+		return c < 0
+	})
+}
+
+func compareBugs(a, b *BugSummary, name string) int {
+	switch name {
+	case "severity":
+		return a.Severity - b.Severity
+	case "pri":
+		return a.Pri - b.Pri
+	case "openeddate":
+		return strings.Compare(a.OpenedDate, b.OpenedDate)
+	case "resolveddate":
+		return strings.Compare(a.ResolvedDate, b.ResolvedDate)
+	case "status":
+		return strings.Compare(a.Status, b.Status)
+	default:
+		return a.ID - b.ID
+	}
 }
 
 // SearchBugs scans one or more scopes and applies the requested filters.
@@ -241,7 +298,7 @@ func (s *Service) SearchBugs(ctx context.Context, req BugSearchRequest) (*BugSea
 		res.Scopes = append(res.Scopes, target)
 	}
 
-	sort.Slice(matched, func(i, j int) bool { return matched[i].ID > matched[j].ID })
+	sortBugs(matched, req.OrderBy)
 
 	res.Matched = len(matched)
 

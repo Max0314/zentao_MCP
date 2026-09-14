@@ -86,14 +86,37 @@ var analysisChecklist = []string{
 	"结论只写证据支持的内容；缺少证据的部分标注“待确认”。",
 }
 
+// AnalyzeRequest describes a single bug analysis.
+type AnalyzeRequest struct {
+	BugID          int
+	IncludeRelated bool
+	RelatedLimit   int
+	CommentLimit   int
+}
+
+// AnalyzeRequestFrom decodes tool arguments into an analysis request.
+func AnalyzeRequestFrom(in map[string]any) (AnalyzeRequest, error) {
+	req := AnalyzeRequest{
+		BugID:          argInt(in, "bugID", 0),
+		IncludeRelated: argBool(in, "includeRelated", true),
+		RelatedLimit:   argInt(in, "relatedLimit", 0),
+		CommentLimit:   argInt(in, "commentLimit", 0),
+	}
+
+	if req.BugID <= 0 {
+		return AnalyzeRequest{}, fmt.Errorf("%w: bugID is required", errInvalidArgument)
+	}
+
+	return req, nil
+}
+
 // AnalyzeBug builds a structured problem analysis packet for one bug.
-func (s *Service) AnalyzeBug(ctx context.Context, bugID int, includeRelated bool, relatedLimit, commentLimit int) (*BugAnalysis, error) {
+func (s *Service) AnalyzeBug(ctx context.Context, req AnalyzeRequest) (*BugAnalysis, error) {
 	ctx, span := s.tracer.Start(ctx, "AnalyzeBug")
 	defer span.End()
 
-	if bugID <= 0 {
-		return nil, fmt.Errorf("%w: bugID is required", errInvalidArgument)
-	}
+	bugID, includeRelated := req.BugID, req.IncludeRelated
+	relatedLimit, commentLimit := req.RelatedLimit, req.CommentLimit
 
 	rec, err := s.detail(ctx, fmt.Sprintf("/bugs/%d", bugID), "bug")
 	if err != nil {
@@ -133,13 +156,7 @@ func (s *Service) AnalyzeBug(ctx context.Context, bugID int, includeRelated bool
 		out.Metrics.OpenToCloseDays = &days
 	}
 
-	for _, entry := range timeline {
-		if strings.EqualFold(entry.Action, "resolved") && entry.Comment != "" {
-			out.Content.ResolutionNote = entry.Comment
-
-			break
-		}
-	}
+	out.Content.ResolutionNote = resolutionNote(timeline)
 
 	if commentLimit > 0 && len(out.Comments) > commentLimit {
 		out.Notes = append(out.Notes, fmt.Sprintf("only the last %d of %d comments are included", commentLimit, len(out.Comments)))
@@ -157,6 +174,36 @@ func (s *Service) AnalyzeBug(ctx context.Context, bugID int, includeRelated bool
 	}
 
 	return out, nil
+}
+
+// resolutionNote picks the text that explains how a bug was fixed.
+//
+// Teams record the diagnosis and the fix as separate dated 备注 (commented
+// actions) and routinely leave the resolve remark itself empty, so reading only
+// the resolved action returned nothing for bugs that are fully documented.
+// Prefer an explicit resolve comment, then the last comment recorded up to the
+// resolution, then the last comment on the bug.
+func resolutionNote(timeline []TimelineEntry) string {
+	var lastComment string
+
+	for _, entry := range timeline {
+		switch strings.ToLower(entry.Action) {
+		case "commented":
+			if entry.Comment != "" {
+				lastComment = entry.Comment
+			}
+		case "resolved":
+			if entry.Comment != "" {
+				return entry.Comment
+			}
+
+			if lastComment != "" {
+				return lastComment
+			}
+		}
+	}
+
+	return lastComment
 }
 
 // actionInsights turns the ZenTao actions list into a timeline plus metrics.
@@ -200,7 +247,7 @@ func actionInsights(rec map[string]any) ([]TimelineEntry, []TimelineEntry, BugMe
 			Action:  name,
 			Actor:   fieldString(action, "actor"),
 			Comment: truncate(comment, commentPreview),
-			AIScore: fieldString(action, "aiScore", "score"),
+			AIScore: commentScore(action),
 		}
 
 		metrics.Actions++

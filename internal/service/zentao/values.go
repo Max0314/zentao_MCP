@@ -15,7 +15,9 @@ import (
 const emptyDatePrefix = "0000-00-00"
 
 var (
-	tagPattern    = regexp.MustCompile(`(?s)<[^>]*>`)
+	// A tag must start with a letter or a closing slash, so a literal
+	// comparison such as "温度 < 60" is not mistaken for markup and deleted.
+	tagPattern    = regexp.MustCompile(`(?s)</?[A-Za-z][^>]*>`)
 	spacePattern  = regexp.MustCompile(`[ \t\x{00a0}]+`)
 	blankPattern  = regexp.MustCompile(`\n{3,}`)
 	hanPattern    = regexp.MustCompile(`\p{Han}+`)
@@ -181,15 +183,67 @@ func toFloat(v any) (float64, bool) {
 	return 0, false
 }
 
-// field returns the first present, non-nil value among the given field names.
+// field returns the first populated value among the given field names.
+//
+// ZenTao v1 serialises unset columns as "" or as an empty user object instead
+// of omitting them, so a bare presence check lets an empty first alias shadow a
+// populated later one - e.g. {"product":"", "productID":654} would resolve to
+// the empty string. Empty values are therefore skipped, and only returned if no
+// alias holds anything better.
 func field(rec map[string]any, names ...string) any {
+	var fallback any
+
 	for _, n := range names {
-		if v, ok := rec[n]; ok && v != nil {
-			return v
+		v, ok := rec[n]
+		if !ok || v == nil {
+			continue
 		}
+
+		if isBlank(v) {
+			if fallback == nil {
+				fallback = v
+			}
+
+			continue
+		}
+
+		return v
 	}
 
-	return nil
+	return fallback
+}
+
+// commentScore reads the AI score of one ZenTao action.
+//
+// The object level uses aiScore (0-100) and each independent comment uses
+// score (0-5). ZenTao stores an unscored comment as 0 rather than omitting the
+// column, and neither scale treats 0 as a real grade, so 0 means "not scored
+// yet" - counting it made coverage read as 100% and dragged averages down.
+func commentScore(action map[string]any) string {
+	raw := fieldString(action, "aiScore", "score")
+	if raw == "" {
+		return ""
+	}
+
+	if v, ok := toFloat(raw); ok && v == 0 {
+		return ""
+	}
+
+	return raw
+}
+
+// isBlank reports whether a decoded ZenTao value carries no information.
+func isBlank(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t) == ""
+	case map[string]any:
+		return userRef(t) == ""
+	case []any:
+		return len(t) == 0
+	}
+
+	return false
 }
 
 func fieldString(rec map[string]any, names ...string) string {
@@ -245,17 +299,39 @@ func dateTime(v any) string {
 }
 
 // normalizeDay normalizes a user supplied boundary to YYYY-MM-DD.
-func normalizeDay(s string) string {
+//
+// An unparseable boundary is rejected rather than passed through: withinRange
+// compares day strings lexically, so "2026/08/01" would silently drop every
+// record ('-' sorts before '/') and report zero matches as though the filter
+// had worked.
+func normalizeDay(field, s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return ""
+		return "", nil
 	}
 
 	if t, ok := parseDate(s); ok {
-		return t.Format("2006-01-02")
+		return t.Format("2006-01-02"), nil
 	}
 
-	return s
+	return "", fmt.Errorf("%w: %s=%q is not a date, use YYYY-MM-DD", errInvalidArgument, field, s)
+}
+
+// monthWindow converts a YYYY-MM argument into inclusive day boundaries,
+// rejecting anything it cannot parse so the caller is never told a month
+// filter was applied when it was silently dropped.
+func monthWindow(month string) (string, string, error) {
+	month = strings.TrimSpace(month)
+	if month == "" {
+		return "", "", nil
+	}
+
+	from, to, ok := monthRange(month)
+	if !ok {
+		return "", "", fmt.Errorf("%w: month=%q is not YYYY-MM", errInvalidArgument, month)
+	}
+
+	return from, to, nil
 }
 
 // monthRange converts YYYY-MM into inclusive first and last day boundaries.

@@ -58,7 +58,7 @@ var resolveKinds = map[string]struct {
 }
 
 // ResolveRequestFrom decodes tool arguments into a scope lookup request.
-func ResolveRequestFrom(in map[string]any) ResolveRequest {
+func ResolveRequestFrom(in map[string]any) (ResolveRequest, error) {
 	req := ResolveRequest{
 		Keyword: argString(in, "keyword", "name", "query"),
 		Limit:   clamp(argInt(in, "limit", defaultResolveLimit), 1, maxResolveLimit),
@@ -76,7 +76,7 @@ func ResolveRequestFrom(in map[string]any) ResolveRequest {
 		req.Kinds = []string{"product", "project", "execution", "user"}
 	}
 
-	return req
+	return req, nil
 }
 
 func normalizeKind(kind string) string {

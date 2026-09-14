@@ -1,6 +1,7 @@
 package bugindex
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -87,10 +88,52 @@ func TestTokenizeCoversTwoCharacterChineseTerms(t *testing.T) {
 			t.Fatalf("Tokenize(%q) produced no terms", term)
 		}
 
-		if toks[0] != term {
-			t.Fatalf("Tokenize(%q) = %v, want the bigram itself first", term, toks)
+		if !contains(toks, term) {
+			t.Fatalf("Tokenize(%q) = %v, want the bigram among the terms", term, toks)
 		}
 	}
+}
+
+// Index and query granularity must overlap. Emitting only bigrams for a long
+// run and only a unigram for a lone character made the two vocabularies
+// disjoint: 停 could never match 风扇停转, in either direction.
+func TestTokenizeMatchesAcrossGranularity(t *testing.T) {
+	doc := Tokenize("风扇停转")
+	query := Tokenize("停")
+
+	if len(query) != 1 || query[0] != "停" {
+		t.Fatalf("Tokenize(\"停\") = %v, want a single unigram", query)
+	}
+
+	if !contains(doc, "停") {
+		t.Fatalf("Tokenize(%q) = %v, want it to contain the unigram 停", "风扇停转", doc)
+	}
+
+	if !contains(doc, "风扇") || !contains(doc, "停转") {
+		t.Fatalf("bigrams missing from %v", doc)
+	}
+}
+
+// A literal comparison is not markup. `<[^>]*>` deleted everything between the
+// two operators, which is routine in device reports (温度 < 60, 丢包率<1%).
+func TestPlainTextKeepsLiteralComparisons(t *testing.T) {
+	got := PlainText("<p>[期望] 温度 &lt; 60 摄氏度</p>\n[实测] 温度 > 85 摄氏度，风扇停转")
+
+	for _, want := range []string{"期望", "60", "实测", "85", "风扇停转"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("PlainText dropped %q: %q", want, got)
+		}
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+
+	return false
 }
 
 func TestTokenizeKeepsDeviceModelsIntact(t *testing.T) {
@@ -180,28 +223,60 @@ func TestSearchBoostsExactDeviceModelMatch(t *testing.T) {
 func TestSearchFiltersByProductAndResolution(t *testing.T) {
 	ix := newTestIndex(t)
 
+	// A Hit carries no content - the caller re-reads under its own credentials -
+	// so the filters are checked against the corpus by id.
+	byID := make(map[int]Doc)
+	for _, d := range ix.Docs() {
+		byID[d.ID] = d
+	}
+
 	hits, _ := ix.Search(Query{Text: "端口开放扫描", Product: 53})
+	if len(hits) == 0 {
+		t.Fatal("expected at least one hit inside product 53")
+	}
+
 	for _, h := range hits {
-		if h.Product != 53 {
-			t.Fatalf("product filter leaked product %d", h.Product)
+		if got := byID[h.ID].Product; got != 53 {
+			t.Fatalf("product filter leaked product %d via bug %d", got, h.ID)
 		}
 	}
 
 	fixed, _ := ix.Search(Query{Text: "端口开放扫描", FixedOnly: true})
 	for _, h := range fixed {
-		if h.Resolution != "fixed" {
-			t.Fatalf("fixedOnly returned resolution %q", h.Resolution)
+		if got := byID[h.ID].Resolution; got != "fixed" {
+			t.Fatalf("fixedOnly returned resolution %q via bug %d", got, h.ID)
 		}
+	}
+}
+
+// A Hit must not carry indexed content: the corpus is built by a service
+// account, so anything beyond the id and ranking data would reach a caller that
+// has not been permission-checked yet.
+func TestHitCarriesNoIndexedContent(t *testing.T) {
+	ix := newTestIndex(t)
+
+	hits, _ := ix.Search(Query{Text: "dcmg150 弹框遮罩"})
+	if len(hits) == 0 {
+		t.Fatal("expected a hit")
+	}
+
+	if reflect.TypeOf(hits[0]).NumField() != 3 {
+		t.Fatalf("Hit gained fields: %+v", hits[0])
 	}
 }
 
 func TestSearchFiltersByOpenedDate(t *testing.T) {
 	ix := newTestIndex(t)
 
+	byID := make(map[int]Doc)
+	for _, d := range ix.Docs() {
+		byID[d.ID] = d
+	}
+
 	hits, _ := ix.Search(Query{Text: "网关", OpenedAfter: "2026-01-01"})
 	for _, h := range hits {
-		if h.OpenedDate < "2026-01-01" {
-			t.Fatalf("date filter leaked %s (#%d)", h.OpenedDate, h.ID)
+		if got := byID[h.ID].OpenedDate; got < "2026-01-01" {
+			t.Fatalf("date filter leaked %s (#%d)", got, h.ID)
 		}
 	}
 }

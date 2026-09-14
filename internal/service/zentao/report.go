@@ -80,50 +80,39 @@ type ReportRequest struct {
 }
 
 // ReportRequestFrom decodes tool arguments into a quality report request.
-func ReportRequestFrom(in map[string]any) ReportRequest {
+func ReportRequestFrom(in map[string]any) (ReportRequest, error) {
+	scope, scopeID, err := scopeSelector(in, "product")
+	if err != nil {
+		return ReportRequest{}, err
+	}
+
 	req := ReportRequest{
-		Scope:        normalizeScope(argString(in, "scope")),
-		ScopeID:      argInt(in, "scopeID", 0),
-		Month:        argString(in, "month"),
-		OpenedAfter:  normalizeDay(argString(in, "openedAfter")),
-		OpenedBefore: normalizeDay(argString(in, "openedBefore")),
-		AssignedTo:   argString(in, "assignedTo"),
-		MaxScan:      clamp(argInt(in, "maxScan", defaultReportScan), 1, maxReportScan),
-		TopN:         clamp(argInt(in, "topN", 10), 1, 50),
+		Scope:      scope,
+		ScopeID:    scopeID,
+		Month:      argString(in, "month"),
+		AssignedTo: argString(in, "assignedTo"),
+		MaxScan:    clamp(argInt(in, "maxScan", defaultReportScan), 1, maxReportScan),
+		TopN:       clamp(argInt(in, "topN", 10), 1, 50),
 	}
 
-	for _, alias := range []struct {
-		name  string
-		scope string
-	}{
-		{"productID", "product"},
-		{"projectID", "project"},
-		{"executionID", "execution"},
-	} {
-		if req.ScopeID > 0 {
-			break
-		}
-
-		if id := argInt(in, alias.name, 0); id > 0 {
-			req.ScopeID = id
-
-			if req.Scope == "" {
-				req.Scope = alias.scope
-			}
-		}
+	if req.OpenedAfter, err = normalizeDay("openedAfter", argString(in, "openedAfter")); err != nil {
+		return ReportRequest{}, err
 	}
 
-	if req.Scope == "" {
-		req.Scope = "product"
+	if req.OpenedBefore, err = normalizeDay("openedBefore", argString(in, "openedBefore")); err != nil {
+		return ReportRequest{}, err
 	}
 
-	if req.Month != "" {
-		if from, to, ok := monthRange(req.Month); ok && req.OpenedAfter == "" && req.OpenedBefore == "" {
-			req.OpenedAfter, req.OpenedBefore = from, to
-		}
+	from, to, err := monthWindow(req.Month)
+	if err != nil {
+		return ReportRequest{}, err
 	}
 
-	return req
+	if from != "" && req.OpenedAfter == "" && req.OpenedBefore == "" {
+		req.OpenedAfter, req.OpenedBefore = from, to
+	}
+
+	return req, nil
 }
 
 // QualityReportFor scans one scope and aggregates its bug quality picture.
@@ -218,7 +207,10 @@ func (s *Service) QualityReportFor(ctx context.Context, req ReportRequest) (*Qua
 			out.Totals.Unconfirmed++
 		}
 
-		if bug.ActivatedNum > 1 {
+		// ZenTao counts reactivations, not activations: activatedCount is 0 on
+		// a bug that was never reopened, so > 1 missed every single-reopen bug
+		// and reported regression quality as clean.
+		if bug.ActivatedNum > 0 {
 			out.Totals.Reopened++
 		}
 
