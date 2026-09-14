@@ -60,7 +60,11 @@ func (s *Service) getJSON(ctx context.Context, apiPath string, query url.Values)
 		u.RawQuery = query.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+	// The body must be nil rather than http.NoBody: http.NewRequest stores
+	// http.NoBody as a non-nil Body without setting GetBody, which makes the
+	// request look unreplayable and stops the auth transport from refreshing
+	// an expired ZenTao token after a 401.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -309,5 +310,42 @@ func TestTransportPrefersManagedCredentialsOverLegacyToken(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// A ZenTao token expires while the server is running; the next call must be
+// able to re-login and replay. Bodyless GETs are replayable however the caller
+// spelled "no body", so an expired token never turns into a user-visible 401.
+func TestCanReplayBodylessRequests(t *testing.T) {
+	tests := []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "nil body", body: nil},
+		{name: "http.NoBody", body: http.NoBody},
+	}
+
+	for _, tt := range tests {
+		req, err := http.NewRequest(http.MethodGet, "http://zentao.test/api.php/v1/products", tt.body)
+		if err != nil {
+			t.Fatalf("%s: new request: %v", tt.name, err)
+		}
+
+		if !canReplay(req) {
+			t.Fatalf("%s: canReplay = false, so a 401 would be returned without refreshing the token", tt.name)
+		}
+	}
+}
+
+func TestCanReplayRejectsUnrewindableBody(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://zentao.test/api.php/v1/bugs", io.LimitReader(strings.NewReader("payload"), 7))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	req.GetBody = nil
+
+	if canReplay(req) {
+		t.Fatal("a body that cannot be rewound must not be replayed")
 	}
 }

@@ -84,8 +84,12 @@ func cloneRequestForAttempt(req *http.Request) (*http.Request, error) {
 	return r, nil
 }
 
+// canReplay reports whether the request can be sent a second time after a 401.
+// A request with no body is always replayable, including when the caller
+// expressed that as http.NoBody, which NewRequest stores as a non-nil Body
+// with no GetBody.
 func canReplay(req *http.Request) bool {
-	return req.Body == nil || req.GetBody != nil
+	return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
 }
 
 func loginErrorResponse(req *http.Request, err error) (*http.Response, error) {
