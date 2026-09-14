@@ -32,7 +32,14 @@ const (
 	verifyConcurrency = 6
 	// overFetch decides how many extra ranked candidates to keep so that
 	// records the caller cannot read can be dropped without starving results.
-	overFetch          = 3
+	//
+	// The service account is deliberately far more visible than a typical
+	// caller - on 10.70.33.19 it indexes 623 products while an ordinary account
+	// sees about 115 - so most candidates are expected to be filtered out.
+	// At 3x, a five-result request came back with two. Candidates are verified
+	// in rounds and stop as soon as enough are visible, so a high ceiling costs
+	// nothing when the caller can see most of them.
+	overFetch          = 8
 	maxVerifyCandidate = 60
 	stepsClip          = 420
 	fixNoteClip        = 420
@@ -425,7 +432,8 @@ func (s *Service) FindSimilarBugs(ctx context.Context, req HistoryRequest) (*His
 	out.Unavailable = unavailable
 
 	if hidden > 0 {
-		out.Notes = append(out.Notes, fmt.Sprintf("%d 条候选因当前账号无权访问已被丢弃，仅统计数量，不返回其内容。", hidden))
+		out.Notes = append(out.Notes, fmt.Sprintf(
+			"%d 条候选当前账号读不到（无权限或记录已删除），已丢弃，仅统计数量、不返回其内容。重试不会改变结果。", hidden))
 	}
 
 	if unavailable > 0 {
@@ -483,6 +491,9 @@ func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int
 					hidden++
 				} else {
 					unavailable++
+
+					s.logger.WarnContext(ctx, "similar bug re-read failed",
+						"bug", batch[i].ID, "error", errs[i])
 				}
 
 				continue
@@ -515,8 +526,17 @@ func isDenied(err error) bool {
 		return false
 	}
 
+	// ZenTao 12.3 v1 answers a bug the account cannot read with HTTP 400 and a
+	// body of {"error":"error"} rather than 401/403/404 - verified against
+	// 10.70.33.19, where a bug in a product outside the caller's visible set
+	// returns exactly that while the same read succeeds as admin. The detail
+	// path is always built here from a numeric id, so a 400 is never a
+	// malformed request of ours.
 	switch apiErr.Status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+	case http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound:
 		return true
 	}
 
