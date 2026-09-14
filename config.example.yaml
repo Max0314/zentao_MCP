@@ -32,10 +32,17 @@ servers:
       # 因此查询结果永远不会直接取自索引：每条候选都会用【调用者自己的凭据】
       # 重新读一次，读不到的直接丢弃，只回报被过滤的数量。
       account: "索引服务账号"
-      # 口令优先从环境变量读，避免落到配置文件里
+      # 口令优先从环境变量读，避免落到配置文件里。配合项目目录下的 .env（权限 600）：
+      #   echo 'ZENTAO_INDEX_PASSWORD=xxx' > .env && chmod 600 .env
+      # 并在 docker-compose.yml 的 environment 下加一行：
+      #   ZENTAO_INDEX_PASSWORD: ${ZENTAO_INDEX_PASSWORD}
       password_env: "ZENTAO_INDEX_PASSWORD"
       refresh: "6h"
       body_chars: 400
+      # 这两个上限必须覆盖服务账号的实际可见范围，否则多出来的部分静默不进索引。
+      # 先确认账号能看到多少产品：GET /products?limit=1 的 total。
+      max_products: 700
+      max_bugs_per_product: 5000
     allow:
       - methods: ["GET", "POST", "PUT", "DELETE"]
         regex: ".*"

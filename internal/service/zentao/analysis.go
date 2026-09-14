@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/merzzzl/openapi-mcp-server/internal/service/bugindex"
 )
 
 const (
@@ -280,6 +282,70 @@ func actionInsights(rec map[string]any) ([]TimelineEntry, []TimelineEntry, BugMe
 	return timeline, comments, metrics
 }
 
+// relatedFromIndex ranks related bugs against the whole indexed product and
+// re-reads each candidate as the calling user. It reports ok=false when the
+// index yields nothing usable, so the caller can fall back to a live scan.
+func (s *Service) relatedFromIndex(ctx context.Context, bug BugSummary, limit int) ([]RelatedBug, []string, bool) {
+	hits, _ := s.index.Search(bugindex.Query{
+		Text:    bug.Title,
+		Product: bug.Product,
+		Limit:   limit * overFetch,
+	})
+
+	candidates := make([]bugindex.Hit, 0, len(hits))
+
+	for _, h := range hits {
+		if h.ID != bug.ID {
+			candidates = append(candidates, h)
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil, false
+	}
+
+	records := make([]map[string]any, len(candidates))
+	errs := make([]error, len(candidates))
+
+	forEachBounded(len(candidates), verifyConcurrency, func(i int) {
+		records[i], errs[i] = s.detail(ctx, fmt.Sprintf("/bugs/%d", candidates[i].ID), "bug")
+	})
+
+	want := titleTokens(bug.Title)
+	found := make([]RelatedBug, 0, limit)
+
+	for i := range candidates {
+		if errs[i] != nil || records[i] == nil || fieldInt(records[i], "id") != candidates[i].ID {
+			continue
+		}
+
+		if len(found) >= limit {
+			break
+		}
+
+		rec := records[i]
+		title := fieldString(rec, "title")
+		module := fieldInt(rec, "module")
+
+		found = append(found, RelatedBug{
+			ID:         candidates[i].ID,
+			Title:      title,
+			Status:     fieldString(rec, "status"),
+			Resolution: fieldString(rec, "resolution"),
+			Module:     module,
+			OpenedDate: dateOnly(field(rec, "openedDate")),
+			Similarity: similarity(want, titleTokens(title)),
+			SameModule: bug.Module > 0 && module == bug.Module,
+		})
+	}
+
+	if len(found) == 0 {
+		return nil, nil, false
+	}
+
+	return found, []string{"相似 Bug 来自全量索引（整个产品，不只最近几百条），每条都已用当前账号回查。"}, true
+}
+
 // relatedBugs finds similar bugs in the same product for pattern analysis.
 func (s *Service) relatedBugs(ctx context.Context, bug BugSummary, limit int) ([]RelatedBug, []string) {
 	if limit <= 0 {
@@ -290,6 +356,15 @@ func (s *Service) relatedBugs(ctx context.Context, bug BugSummary, limit int) ([
 
 	if bug.Product <= 0 {
 		return nil, []string{"related bugs were skipped because this bug carries no product id"}
+	}
+
+	// Prefer the index: it covers the whole product rather than the newest few
+	// hundred bugs, and needs no list download. Candidates are still re-read as
+	// the calling user, so nothing indexed reaches the caller unverified.
+	if s.index != nil && s.index.Ready() {
+		if related, notes, ok := s.relatedFromIndex(ctx, bug, limit); ok {
+			return related, notes
+		}
 	}
 
 	query := url.Values{}

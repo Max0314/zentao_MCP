@@ -13,6 +13,8 @@ const (
 	defaultScoreBatch = 20
 	maxScoreBatch     = 50
 	scoreCommentClip  = 240
+	// scoreConcurrency bounds the parallel detail reads of one score lookup.
+	scoreConcurrency = 6
 )
 
 // CommentScore is one scored ZenTao comment.
@@ -143,10 +145,19 @@ func (s *Service) AIScores(ctx context.Context, req ScoreRequest) (*ScoreResult,
 		ids = ids[:req.Limit]
 	}
 
+	// Each object is an independent detail read of ~0.3s; serially this took
+	// about 16s for 50 objects, past many MCP clients' tool timeout.
+	items := make([]ScoreItem, len(ids))
+	valueSets := make([][]float64, len(ids))
+
+	forEachBounded(len(ids), scoreConcurrency, func(i int) {
+		items[i], valueSets[i] = s.scoreOne(ctx, req.ObjectType, ids[i], req.IncludeDetail)
+	})
+
 	var all []float64
 
-	for _, id := range ids {
-		item, values := s.scoreOne(ctx, req.ObjectType, id, req.IncludeDetail)
+	for i := range items {
+		item, values := items[i], valueSets[i]
 
 		out.Summary.Objects++
 		out.Summary.Comments += item.Comments

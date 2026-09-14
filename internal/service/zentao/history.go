@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/merzzzl/openapi-mcp-server/internal/middleware"
@@ -23,7 +22,9 @@ const (
 	// maxFailedScanPercent is how much of a refresh may fail before the new
 	// generation is considered too degraded to replace a larger healthy one.
 	maxFailedScanPercent = 20
-	indexPageSize         = 100
+	// indexConcurrency bounds the parallel product scans of one build.
+	indexConcurrency = 8
+	indexPageSize    = 100
 
 	defaultSimilarLimit = 8
 	maxSimilarLimit     = 25
@@ -124,10 +125,14 @@ func (s *Service) refreshIndex(ctx context.Context) {
 
 	docs, scanned, failed, err := s.buildCorpus(buildCtx)
 	if err != nil {
+		s.buildState.Store(&buildState{done: true, err: err, at: time.Now()})
+
 		s.logger.ErrorContext(ctx, "bug index build failed", "error", err, "elapsed", time.Since(start).String())
 
 		return
 	}
+
+	s.buildState.Store(&buildState{done: true, at: time.Now()})
 
 	// Never trade a healthy corpus for a degraded one. Per-product scan
 	// failures are individually survivable, but when the service account's
@@ -170,26 +175,34 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 	query.Set("status", "all")
 	query.Set("orderBy", "id_desc")
 
-	// The upstream repeats records across page boundaries, so collect by id.
-	byID := make(map[int]bugindex.Doc, 4096)
+	// Scan products concurrently: 600+ products at ~0.2s per page made a
+	// sequential build take minutes, during which the corpus is stale.
+	type productScan struct {
+		docs    []bugindex.Doc
+		err     error
+		counted bool
+	}
 
-	for _, product := range products.Records {
-		pid := fieldInt(product, "id")
+	recs := products.Records
+	scans := make([]productScan, len(recs))
+
+	forEachBounded(len(recs), indexConcurrency, func(i int) {
+		pid := fieldInt(recs[i], "id")
 		if pid <= 0 {
-			continue
+			return
 		}
 
-		pname := fieldString(product, "name")
-		scanned++
+		pname := fieldString(recs[i], "name")
+		scans[i].counted = true
 
 		bugs, err := s.listAll(ctx, fmt.Sprintf("/products/%d/bugs", pid), query, s.indexOpts.MaxBugsPerProduct)
 		if err != nil {
-			failed++
+			scans[i].err = err
 
-			s.logger.WarnContext(ctx, "bug index: product scan failed", "product", pid, "error", err)
-
-			continue
+			return
 		}
+
+		docs := make([]bugindex.Doc, 0, len(bugs.Records))
 
 		for _, rec := range bugs.Records {
 			id := fieldInt(rec, "id")
@@ -199,7 +212,7 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 
 			title := fieldString(rec, "title")
 
-			byID[id] = bugindex.Doc{
+			docs = append(docs, bugindex.Doc{
 				ID:           id,
 				Product:      pid,
 				ProductName:  pname,
@@ -213,7 +226,34 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 				Resolution:   fieldString(rec, "resolution"),
 				OpenedDate:   dateOnly(field(rec, "openedDate")),
 				ResolvedDate: dateOnly(field(rec, "resolvedDate")),
-			}
+			})
+		}
+
+		scans[i].docs = docs
+	})
+
+	// Merge on one goroutine; the upstream repeats records across page
+	// boundaries, so collect by id.
+	byID := make(map[int]bugindex.Doc, 4096)
+
+	for i := range scans {
+		if !scans[i].counted {
+			continue
+		}
+
+		scanned++
+
+		if scans[i].err != nil {
+			failed++
+
+			s.logger.WarnContext(ctx, "bug index: product scan failed",
+				"product", fieldInt(recs[i], "id"), "error", scans[i].err)
+
+			continue
+		}
+
+		for _, d := range scans[i].docs {
+			byID[d.ID] = d
 		}
 	}
 
@@ -325,7 +365,18 @@ func (s *Service) FindSimilarBugs(ctx context.Context, req HistoryRequest) (*His
 	}
 
 	if !s.index.Ready() {
-		return nil, fmt.Errorf("%w: the bug index is still building, retry in a moment", errIndexNotReady)
+		// Distinguish the three states that all used to say "retry in a moment".
+		// A failed build will not fix itself before the next refresh tick, so
+		// telling the caller to retry was simply wrong.
+		switch st := s.buildState.Load(); {
+		case st == nil || !st.done:
+			return nil, fmt.Errorf("%w: 索引正在首次构建，请稍后重试", errIndexNotReady)
+		case st.err != nil:
+			return nil, fmt.Errorf("%w: 索引构建失败（%v），在下次刷新前重试不会有变化，请检查索引服务账号和禅道连通性",
+				errIndexNotReady, st.err)
+		default:
+			return nil, fmt.Errorf("%w: 索引构建成功但没有任何记录，请确认索引服务账号能读到 Bug 数据", errIndexNotReady)
+		}
 	}
 
 	limit := req.Limit
@@ -395,7 +446,7 @@ func (s *Service) indexStatus() IndexStatus {
 	status := IndexStatus{Documents: s.index.Len()}
 
 	if built := s.index.BuiltAt(); !built.IsZero() {
-		status.BuiltAt = built.In(location).Format("2006-01-02 15:04:05")
+		status.BuiltAt = built.In(currentLocation()).Format("2006-01-02 15:04:05")
 		status.AgeHours = time.Since(built).Hours()
 	}
 
@@ -418,25 +469,9 @@ func (s *Service) verifyHits(ctx context.Context, hits []bugindex.Hit, limit int
 		records := make([]map[string]any, len(batch))
 		errs := make([]error, len(batch))
 
-		var (
-			wg  sync.WaitGroup
-			sem = make(chan struct{}, verifyConcurrency)
-		)
-
-		for i := range batch {
-			wg.Add(1)
-
-			go func(i int) {
-				defer wg.Done()
-
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				records[i], errs[i] = s.detail(ctx, fmt.Sprintf("/bugs/%d", batch[i].ID), "bug")
-			}(i)
-		}
-
-		wg.Wait()
+		forEachBounded(len(batch), verifyConcurrency, func(i int) {
+			records[i], errs[i] = s.detail(ctx, fmt.Sprintf("/bugs/%d", batch[i].ID), "bug")
+		})
 
 		for i := range batch {
 			if len(visible) >= limit {

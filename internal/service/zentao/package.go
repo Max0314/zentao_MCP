@@ -5,6 +5,8 @@ package zentao
 
 import (
 	"log/slog"
+	"sync/atomic"
+	"time"
 
 	"github.com/merzzzl/openapi-mcp-server/internal/repository"
 	"github.com/merzzzl/openapi-mcp-server/internal/service/bugindex"
@@ -23,6 +25,17 @@ type Service struct {
 	// re-read as the calling user before anything is returned.
 	index     *bugindex.Index
 	indexOpts IndexOptions
+	// buildState records the outcome of the last index build so a lookup can
+	// tell "never built yet" from "the build failed", instead of telling every
+	// caller to retry in a moment for the next six hours.
+	buildState atomic.Pointer[buildState]
+}
+
+// buildState is the result of one index build attempt.
+type buildState struct {
+	done bool
+	err  error
+	at   time.Time
 }
 
 // New creates a ZenTao composite Service on top of the shared proxy repository.

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -211,6 +212,37 @@ func toRecords(items []any) []map[string]any {
 	}
 
 	return out
+}
+
+// forEachBounded runs fn for indices [0,n) with at most limit running at once.
+//
+// Every scan in this package is a set of independent upstream reads, and the
+// upstream is the bottleneck: one detail read takes ~0.3s and one list page
+// ~0.2s, so doing them one after another is what made a full index build take
+// minutes and a 50-object score lookup exceed client timeouts.
+func forEachBounded(n, limit int, fn func(i int)) {
+	if limit < 1 {
+		limit = 1
+	}
+
+	var wg sync.WaitGroup
+
+	sem := make(chan struct{}, limit)
+
+	for i := range n {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			fn(i)
+		}(i)
+	}
+
+	wg.Wait()
 }
 
 // ScopeStat reports how much of one scope was scanned.

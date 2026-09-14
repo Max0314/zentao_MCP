@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,11 +44,22 @@ var (
 		"2006/01/02 15:04:05",
 	}
 
-	// location is the ZenTao server's wall-clock zone. It is process wide
-	// because every configured upstream is the same deployment; SetLocation
-	// must be called before any server starts serving.
-	location = defaultLocation()
+	// location is the ZenTao server's wall-clock zone, held atomically because
+	// it is read from every request goroutine and from the index builder.
+	// A plain variable was safe only by virtue of main calling SetLocation
+	// before serving started - nothing enforced that, and a config reload or a
+	// per-server zone would have turned it into a data race.
+	location atomic.Pointer[time.Location]
 )
+
+func init() {
+	location.Store(defaultLocation())
+}
+
+// currentLocation returns the zone used to turn ZenTao timestamps into dates.
+func currentLocation() *time.Location {
+	return location.Load()
+}
 
 // defaultLocation resolves Asia/Shanghai, falling back to a fixed +08:00 zone
 // when the runtime image ships no tzdata.
@@ -71,14 +83,14 @@ func SetLocation(name string) error {
 		return fmt.Errorf("load timezone %q: %w", name, err)
 	}
 
-	location = loc
+	location.Store(loc)
 
 	return nil
 }
 
 // LocationName reports the zone used to turn ZenTao timestamps into dates.
 func LocationName() string {
-	return location.String()
+	return currentLocation().String()
 }
 
 // plainString renders a scalar JSON value as text.
@@ -267,12 +279,12 @@ func parseDate(v any) (time.Time, bool) {
 
 	for _, layout := range zonedLayouts {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.In(location), true
+			return t.In(currentLocation()), true
 		}
 	}
 
 	for _, layout := range localLayouts {
-		if t, err := time.ParseInLocation(layout, s, location); err == nil {
+		if t, err := time.ParseInLocation(layout, s, currentLocation()); err == nil {
 			return t, true
 		}
 	}
