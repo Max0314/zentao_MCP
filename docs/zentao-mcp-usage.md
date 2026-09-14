@@ -12,16 +12,19 @@ http://10.70.2.73:7892
 
 已配置两个禅道环境：
 
-| MCP 名称 | MCP 地址 | 上游禅道环境 |
-|---|---|---|
-| `zentao-test` | `http://10.70.2.73:7892/zentao-test/mcp` | `http://10.70.33.19/biz/api.php/v1` |
-| `zentao-prod` | `http://10.70.2.73:7892/zentao-prod/mcp` | `http://10.70.33.18/biz/api.php/v1` |
+| MCP 名称 | MCP 地址 | 上游禅道环境 | 说明 |
+|---|---|---|---|
+| `zentao` | `http://10.70.2.73:7892/zentao/mcp` | `http://10.70.33.19/biz/api.php/v1` | **正式库**，日常默认用这个。已禁用删除接口 |
+| `zentao-sandbox` | `http://10.70.2.73:7892/zentao-sandbox/mcp` | `http://10.70.33.18/biz/api.php/v1` | 测试库，写操作演练用。账号密码与正式库不同 |
+
+> **旧名字已废弃**：`zentao-test` 曾经指向的是**正式库**、`zentao-prod` 指向测试库，两者是反的。
+> 这两个名字已被删除而不是重新指向——继续用旧地址会直接报 404，请改成上表的新地址。
 
 在 Codex 中加载后，对应工具命名空间通常显示为：
 
 ```text
-mcp__zentao_test
-mcp__zentao_prod
+mcp__zentao
+mcp__zentao_sandbox
 ```
 
 日常使用时不需要直接写工具名，直接用自然语言说明环境和操作即可。
@@ -31,14 +34,14 @@ mcp__zentao_prod
 推荐使用账号密码模式，由 MCP 服务端自动登录禅道、缓存 token、在 token 失效后自动刷新。
 
 ```toml
-[mcp_servers.zentao-test]
+[mcp_servers.zentao]
 enabled = true
-url = "http://10.70.2.73:7892/zentao-test/mcp"
+url = "http://10.70.2.73:7892/zentao/mcp"
 env_http_headers = { "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "ZENTAO_PASSWORD" }
 
-[mcp_servers.zentao-prod]
+[mcp_servers.zentao-sandbox]
 enabled = true
-url = "http://10.70.2.73:7892/zentao-prod/mcp"
+url = "http://10.70.2.73:7892/zentao-sandbox/mcp"
 env_http_headers = { "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "ZENTAO_PASSWORD" }
 ```
 
@@ -56,10 +59,10 @@ env_http_headers = { "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "Z
 旧的 token header 方式仍然保留，可用于临时兼容历史客户端。
 
 ```toml
-[mcp_servers.zentao-test]
+[mcp_servers.zentao]
 enabled = true
-url = "http://10.70.2.73:7892/zentao-test/mcp"
-env_http_headers = { token = "ZENTAO_TEST_TOKEN" }
+url = "http://10.70.2.73:7892/zentao/mcp"
+env_http_headers = { token = "ZENTAO_TOKEN" }
 ```
 
 认证优先级：
@@ -75,19 +78,19 @@ env_http_headers = { token = "ZENTAO_TEST_TOKEN" }
 示例：
 
 ```text
-用 zentao-test 查询产品列表
+用 zentao 查询产品列表
 ```
 
 ```text
-用 zentao-test 查询“陈鹏列”五月份提交了哪些 bug
+用 zentao 查询“陈鹏列”五月份提交了哪些 bug
 ```
 
 ```text
-用 zentao-prod 查询产品 ID 为 654 的 Bug 列表，只读
+用 zentao 查询产品 ID 为 654 的 Bug 列表，只读
 ```
 
 ```text
-用 zentao-test 创建一个任务，所属执行 4058，任务名是“禅道MCP测试”，指派给陈鹏列，预计工时 5
+用 zentao 创建一个任务，所属执行 4058，任务名是“禅道MCP测试”，指派给陈鹏列，预计工时 5
 ```
 
 ### 4.1 扩展工具（查 Bug / AI 评分 / 问题分析）
@@ -106,19 +109,19 @@ env_http_headers = { token = "ZENTAO_TEST_TOKEN" }
 自然语言示例：
 
 ```text
-用 zentao-test 查一下名字里带“数据中心”的产品 ID
+用 zentao 查一下名字里带“数据中心”的产品 ID
 ```
 
 ```text
-用 zentao-test 查产品 654 里 2026 年 5 月 chenpenglie 提的、标题带“导出”的 Bug
+用 zentao 查产品 654 里 2026 年 5 月 chenpenglie 提的、标题带“导出”的 Bug
 ```
 
 ```text
-用 zentao-test 分析 Bug 88123 的原因，并列出同类问题
+用 zentao 分析 Bug 88123 的原因，并列出同类问题
 ```
 
 ```text
-用 zentao-test 看看执行 4058 最近 20 个任务的 AI 评分情况
+用 zentao 看看执行 4058 最近 20 个任务的 AI 评分情况
 ```
 
 需要在 `config.yaml` 中为该 server 打开 `zentao_extensions: true`。
@@ -140,7 +143,7 @@ env_http_headers = { token = "ZENTAO_TEST_TOKEN" }
 自然语言示例：
 
 ```text
-用 zentao-test 查询前 10 个产品，按 ID 倒序
+用 zentao 查询前 10 个产品，按 ID 倒序
 ```
 
 ### 查询产品 Bug 列表
@@ -161,7 +164,7 @@ Bug 列表通常需要产品 ID。
 自然语言示例：
 
 ```text
-用 zentao-test 查询产品 654 下 2026 年 5 月由 chenpenglie 创建的 Bug
+用 zentao 查询产品 654 下 2026 年 5 月由 chenpenglie 创建的 Bug
 ```
 
 ### 查询执行任务列表
@@ -171,7 +174,7 @@ Bug 列表通常需要产品 ID。
 自然语言示例：
 
 ```text
-用 zentao-test 查询执行 4058 的任务列表，按 ID 倒序
+用 zentao 查询执行 4058 的任务列表，按 ID 倒序
 ```
 
 ## 6. 创建任务
@@ -198,7 +201,7 @@ Bug 列表通常需要产品 ID。
 自然语言示例：
 
 ```text
-用 zentao-test 在执行 4058 下创建任务：
+用 zentao 在执行 4058 下创建任务：
 任务名称：禅道MCP测试。
 描述：测试MCP功能是否生效
 指派给：陈鹏列
@@ -225,7 +228,7 @@ Bug 列表通常需要产品 ID。
 自然语言示例：
 
 ```text
-用 zentao-test 在产品 654 下创建 Bug：
+用 zentao 在产品 654 下创建 Bug：
 标题：页面保存后状态未刷新
 影响版本：trunk
 严重程度：3
@@ -235,8 +238,8 @@ Bug 列表通常需要产品 ID。
 
 ## 8. 使用建议
 
-1. 查询类操作建议明确说 `zentao-test` 或 `zentao-prod`。
-2. 写操作建议先在 `zentao-test` 验证，再对 `zentao-prod` 操作。
+1. 查询类操作建议明确说 `zentao` 或 `zentao-sandbox`。
+2. 写操作建议先在 `zentao-sandbox`（测试库）验证，再对 `zentao` 操作。注意 `zentao` 是**正式库**，写进去就是真数据。
 3. 写操作前尽量提供完整上下文，例如产品 ID、执行 ID、任务名、指派人、日期。
 4. 指派人建议使用禅道账号而不是姓名，例如 `chenpenglie`。
 5. 不要把禅道密码写进项目文件、Markdown 文档或代码仓库。
@@ -248,12 +251,15 @@ Bug 列表通常需要产品 ID。
 检查 Codex 配置中是否存在：
 
 ```toml
-[mcp_servers.zentao-test]
+[mcp_servers.zentao]
 enabled = true
-url = "http://10.70.2.73:7892/zentao-test/mcp"
+url = "http://10.70.2.73:7892/zentao/mcp"
 ```
 
 修改配置或环境变量后，需要重启 Codex。
+
+如果工具曾经正常、现在整体消失，多半是还在用已废弃的 `zentao-test` / `zentao-prod`
+地址（服务端已不再提供），按第 1 节的新地址更新即可。
 
 ### 9.2 返回 `HTTP 401 Unauthorized`
 
@@ -262,7 +268,7 @@ url = "http://10.70.2.73:7892/zentao-test/mcp"
 1. `ZENTAO_ACCOUNT` 或 `ZENTAO_PASSWORD` 没有设置。
 2. Codex 未重启，没有读取到新的环境变量。
 3. 账号密码无法登录对应禅道环境。
-4. 使用旧 token 模式时，`ZENTAO_TEST_TOKEN` 已过期。
+4. 使用旧 token 模式时，`ZENTAO_TOKEN` 已过期。
 
 账号密码模式下，MCP 服务端会自动通过禅道 v1 token 接口登录，不需要用户手动刷新 token。
 

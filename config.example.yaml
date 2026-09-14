@@ -10,6 +10,7 @@ telemetry:
   insecure: true
 
 servers:
+  # 名字必须和实际环境一致：指向正式库就别叫 test。
   - name: zentao
     schema_url: "zentao-openapi.json 的完整路径"
     base_url: "https://您的禅道域名/api.php/v2"
