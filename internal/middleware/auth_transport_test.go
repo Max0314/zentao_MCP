@@ -433,3 +433,57 @@ func TestRejectedLoginBacksOff(t *testing.T) {
 		t.Fatalf("login attempts after the backoff = %d, want 2", got)
 	}
 }
+
+// Correcting a mistyped password must take effect at once. The backoff is
+// keyed by credential, so the penalty earned by the wrong password does not
+// hold back the right one -- a user who fixed their config should not have to
+// wait out a ten minute wait they did not cause.
+func TestCorrectedPasswordIsNotHeldBackByTheBackoff(t *testing.T) {
+	var attempts int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode login payload: %v", err)
+		}
+
+		if payload["password"] != "right" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"登录失败，请检查用户名或密码是否填写正确。"}`))
+
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "token-ok"})
+	}))
+	defer srv.Close()
+
+	m := NewZentaoTokenManager(srv.URL, srv.Client())
+
+	// Two rejected attempts with the wrong password put that credential into backoff.
+	for range 2 {
+		if _, err := m.Token(context.Background(), ZentaoCredentials{Account: "alice", Password: "wrong"}); err == nil {
+			t.Fatal("expected the wrong password to be rejected")
+		}
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("attempts with the wrong password = %d, want 1 (the second must be suppressed)", got)
+	}
+
+	// The corrected password must be tried immediately, not suppressed.
+	token, err := m.Token(context.Background(), ZentaoCredentials{Account: "alice", Password: "right"})
+	if err != nil {
+		t.Fatalf("the corrected password was blocked by the wrong password's backoff: %v", err)
+	}
+
+	if token != "token-ok" {
+		t.Fatalf("token = %q, want token-ok", token)
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2 (one wrong, one corrected)", got)
+	}
+}

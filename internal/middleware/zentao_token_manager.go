@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,7 +107,12 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 		return entry.token, nil
 	}
 
-	if f, ok := m.failures[key]; ok && m.now().Before(f.until) {
+	// The backoff is keyed by credential, not just by account: someone who
+	// corrects a mistyped password must get a fresh attempt immediately
+	// instead of waiting out a penalty earned by the wrong one.
+	fkey := failureKey(key, hash)
+
+	if f, ok := m.failures[fkey]; ok && m.now().Before(f.until) {
 		m.logger.WarnContext(ctx, "skipping zentao login, still backing off",
 			"account", creds.Account,
 			"retry_in", f.until.Sub(m.now()).Round(time.Second).String(),
@@ -118,12 +124,12 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 	token, err := m.login(ctx, creds)
 	if err != nil {
 		delete(m.tokens, key)
-		m.recordFailure(ctx, key, creds.Account, err)
+		m.recordFailure(ctx, fkey, creds.Account, err)
 
 		return "", err
 	}
 
-	delete(m.failures, key)
+	delete(m.failures, fkey)
 
 	m.tokens[key] = tokenEntry{token: token, passwordHash: hash}
 
@@ -147,6 +153,11 @@ func (m *ZentaoTokenManager) recordFailure(ctx context.Context, key, account str
 		"consecutive_failures", prev.count+1,
 		"retry_in", wait.String(),
 	)
+}
+
+// failureKey scopes a login backoff to one account-and-password pair.
+func failureKey(cacheKey string, hash [32]byte) string {
+	return cacheKey + "#" + hex.EncodeToString(hash[:])
 }
 
 func (m *ZentaoTokenManager) cacheKey(account string) string {
