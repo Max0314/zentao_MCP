@@ -8,7 +8,16 @@ services:
     restart: unless-stopped
     command: ["/zentao-mcp", "-config", "/config.yaml"]
     ports:
-      - "7892:7892"
+      # 对外发布的地址和端口由同目录 .env 决定，因为同一份仓库要部署到两台机器：
+      #   内网 10.70.2.73    不写 .env 即可，默认就是原来的 0.0.0.0:7892
+      #   云上 47.108.48.50  MCP_BIND=127.0.0.1  MCP_PORT=39029
+      #                      nginx 在本机反代，绑 0.0.0.0 等于在公网开一个
+      #                      绕过 TLS、鉴权和限速的明文入口。
+      # 冒号右边的容器内端口写死 7892，两台机器的 config.yaml 都保持 port: ":7892"。
+      # 容器有自己的网络命名空间，内部端口不会和宿主机上任何东西冲突，写死它才能
+      # 保证 .env 和 config.yaml 不可能对不上——否则容器照样显示健康（健康检查走
+      # 容器内的 8080），只有反代 502，属于最难查的那类静默错误。
+      - "${MCP_BIND:-0.0.0.0}:${MCP_PORT:-7892}:7892"
     volumes:
       - ./config.yaml:/config.yaml:ro
       - ./docs:/docs:ro
@@ -19,6 +28,13 @@ services:
       # 未设置时为空，服务端只会跳过建索引并告警，不影响其他功能。
       # 必须放在这里而不是只改服务器上的文件：部署会用仓库版本覆盖本文件。
       ZENTAO_INDEX_PASSWORD: ${ZENTAO_INDEX_PASSWORD:-}
+    logging:
+      driver: json-file
+      options:
+        # 工具调用日志会记下完整入参（建 Bug 的标题正文、检索关键词都在里面），
+        # 不轮转就会在磁盘上无限堆积——在公有云上这既是磁盘问题也是数据问题。
+        max-size: "50m"
+        max-file: "5"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/healthz | grep -q ok"]
       interval: 30s

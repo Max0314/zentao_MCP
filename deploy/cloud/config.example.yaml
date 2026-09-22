@@ -1,0 +1,52 @@
+# 云上（NeoFlow 主服务器 47.108.48.50）的 config.yaml 模板。
+# 复制到仓库根目录并改名为 config.yaml —— 根目录的 config.yaml 是 gitignore 的，
+# 只存在于服务器本机，部署不会覆盖它。
+#
+# 与内网那份的区别只有三处：port、base_url、name，其余保持一致。
+
+# 容器内的监听端口，两台机器都保持 7892，不要改。
+# 这台机器对外用的 39029 是宿主机侧的发布端口，写在同目录 .env 的 MCP_PORT 里，
+# 由 docker-compose 做 127.0.0.1:39029 -> 容器 7892 的映射。
+port: ":7892"
+enable_toon: false
+
+# 禅道服务器的墙上时钟时区，跟着禅道走，和本机所在时区无关。
+timezone: "Asia/Shanghai"
+
+telemetry:
+  endpoint: ""
+  insecure: true
+
+servers:
+  # name 必须和 nginx 的子路径一字不差（~/.nginx/zentao-mcp.conf 里的
+  # location ^~ /zentao-mcp/），否则外部访问会 404。
+  # 原因见那个文件里 proxy_pass 上方的注释：子路径反代不剥前缀，是 SSE 能用的前提。
+  - name: zentao-mcp
+    schema_url: "/docs/zentao-openapi.json"
+    # 走禅道的公网入口。这台机器在公有云上，连不到 10.70.33.19。
+    # 路径前缀内外网一致（都是 /biz/），所以只有主机名部分不同。
+    base_url: "https://itms.changhongnetwork.net:28443/biz/api.php/v1"
+    skip_deprecated: true
+    zentao_extensions: true
+    publish_output_schema: false
+    bug_index:
+      enabled: true
+      # 不要用 admin：这个口令要落在一台公网机器的 .env 里。
+      # 换一个只读的专用账号，可见范围尽量和 admin 一致（召回率取决于它能看到多少产品），
+      # 但不给任何写权限。
+      account: "mcp-readonly"
+      password_env: "ZENTAO_INDEX_PASSWORD"
+      refresh: "6h"
+      body_chars: 400
+      max_products: 700
+      max_bugs_per_product: 5000
+    allow:
+      - methods: ["GET", "POST", "PUT", "DELETE"]
+        regex: ".*"
+    block:
+      - methods: ["DELETE"]
+        regex: ".*"
+
+# 这里不要配 zentao-sandbox：10.70.33.18 没有公网入口。
+# 留着服务照样能启动（OpenAPI 文档读的是容器内本地文件，不走网络），
+# 但那个端点上每一次工具调用都会卡到超时才报错。
