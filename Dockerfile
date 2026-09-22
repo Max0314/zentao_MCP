@@ -12,7 +12,13 @@ FROM alpine:3.21
 # tzdata is required for the timezone setting: ZenTao returns object dates as
 # UTC instants, so turning them into calendar dates needs the server's real
 # zone. Without it time.LoadLocation("Asia/Shanghai") fails.
-RUN apk add --no-cache tzdata
+# ca-certificates carries the public root store. The upstream ZenTao entry
+# point may be an HTTPS address (the public one is a DigiCert certificate), and
+# without a root store every upstream call fails with
+# "x509: certificate signed by unknown authority". Alpine's base image normally
+# ships ca-certificates-bundle already; naming it here stops a future base image
+# change from taking the service down.
+RUN apk add --no-cache tzdata ca-certificates
 COPY --from=builder /app/zentao-mcp /zentao-mcp
 EXPOSE 8080
 CMD ["/zentao-mcp"]
