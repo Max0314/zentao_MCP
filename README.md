@@ -17,7 +17,7 @@
 
 当前团队安装与公网接入见 [使用说明](docs/zentao-mcp-usage.md)，
 内外两套服务器的发布、凭据更新和验收见 [云上部署说明](deploy/cloud/README.md)。
-公网默认地址为 `https://neoflow-cn.neo-net.com/zentao-mcp/mcp`，需要入口密钥与个人禅道凭据。
+公网默认地址为 `https://neoflow-cn.neo-net.com/zentao-mcp/mcp`，只需个人禅道账号、密码，无需共享入口密钥。初始化、工具列表和工具调用均先验证凭据。
 
 **2. 技术栈：**
 

@@ -131,7 +131,13 @@ func NewZentaoTokenManager(baseURL string, client *http.Client, options ...Zenta
 
 // Token returns a cached token for the account or logs in when no matching token exists.
 func (m *ZentaoTokenManager) Token(ctx context.Context, creds ZentaoCredentials) (string, error) {
-	return m.token(ctx, creds, "")
+	return m.token(ctx, creds, "", nil)
+}
+
+// TokenWithLoginGuard applies a cheap guard only when a new upstream login is
+// needed. Cache hits and locally suppressed failures do not consume its budget.
+func (m *ZentaoTokenManager) TokenWithLoginGuard(ctx context.Context, creds ZentaoCredentials, guard func() error) (string, error) {
+	return m.token(ctx, creds, "", guard)
 }
 
 // Refresh exchanges a token that the upstream rejected for a fresh one. Pass
@@ -140,14 +146,18 @@ func (m *ZentaoTokenManager) Token(ctx context.Context, creds ZentaoCredentials)
 // concurrent 401s each perform their own login and a burst of them locks the
 // ZenTao account.
 func (m *ZentaoTokenManager) Refresh(ctx context.Context, creds ZentaoCredentials, stale string) (string, error) {
-	return m.token(ctx, creds, stale)
+	return m.token(ctx, creds, stale, nil)
 }
 
 // token returns a usable token. stale is empty for an ordinary lookup, or the
 // rejected token when refreshing.
-func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials, stale string) (string, error) {
+func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials, stale string, guard func() error) (string, error) {
 	hash := sha256.Sum256([]byte(creds.Password))
 	key := m.cacheKey(creds.Account)
+	// Keep token caches case-sensitive, but serialize and protect account-name
+	// variants together. Otherwise changing case or whitespace can bypass the
+	// upstream lockout protection without changing the actual ZenTao account.
+	protectionKey := m.cacheKey(strings.ToLower(strings.TrimSpace(creds.Account)))
 	fkey := failureKey(key, hash)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -164,7 +174,7 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 			m.mu.Unlock()
 			return entry.token, nil
 		}
-		if f, ok := m.accountFailures[key]; ok && f.count >= m.opts.FailureLimit {
+		if f, ok := m.accountFailures[protectionKey]; ok && f.count >= m.opts.FailureLimit {
 			m.mu.Unlock()
 			return "", authThrottleError("该账号登录失败次数达到保护上限，请检查正式/测试环境和密码，冷却后再试", f.until.Sub(now))
 		}
@@ -174,7 +184,7 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 		}
 		// Coalesce by account, including callers supplying different passwords.
 		// Waiters can cancel and other accounts never wait on a network login.
-		if done, ok := m.inflight[key]; ok {
+		if done, ok := m.inflight[protectionKey]; ok {
 			m.mu.Unlock()
 			select {
 			case <-ctx.Done():
@@ -183,7 +193,8 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 				continue
 			}
 		}
-		if _, ok := m.accountFailures[key]; !ok {
+		_, protected := m.accountFailures[protectionKey]
+		if !protected {
 			// Never evict an active protection bucket: eviction would reset its
 			// budget and let a flood of new account names bypass the guard.
 			if len(m.accountFailures) >= m.opts.MaxCacheEntries {
@@ -196,10 +207,18 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 				m.mu.Unlock()
 				return "", authThrottleError("登录保护缓存已满，请稍后重试", wait)
 			}
-			m.accountFailures[key] = accountFailureEntry{until: now.Add(m.opts.FailureWindow)}
+		}
+		if guard != nil {
+			if err := guard(); err != nil {
+				m.mu.Unlock()
+				return "", err
+			}
+		}
+		if !protected {
+			m.accountFailures[protectionKey] = accountFailureEntry{until: now.Add(m.opts.FailureWindow)}
 		}
 		done := make(chan struct{})
-		m.inflight[key] = done
+		m.inflight[protectionKey] = done
 		m.mu.Unlock()
 
 		loginCtx, cancel := context.WithTimeout(ctx, loginTimeout)
@@ -218,7 +237,7 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 			}
 			var rejected *ZentaoLoginError
 			if errors.As(err, &rejected) && (rejected.StatusCode == 400 || rejected.StatusCode == 401 || rejected.StatusCode == 403) {
-				f := m.accountFailures[key]
+				f := m.accountFailures[protectionKey]
 				if !now.Before(f.until) {
 					f = accountFailureEntry{until: now.Add(m.opts.FailureWindow)}
 				}
@@ -226,16 +245,16 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 				// Measure the quiet period from the last real rejected login.
 				// Locally suppressed requests never move this deadline.
 				f.until = now.Add(m.opts.FailureWindow)
-				m.accountFailures[key] = f
+				m.accountFailures[protectionKey] = f
 				if f.count >= m.opts.FailureLimit {
 					m.logger.WarnContext(ctx, "zentao account login protection activated",
 						"account", creds.Account, "failures", f.count, "retry_in", m.opts.FailureWindow.String())
 				}
-			} else if m.accountFailures[key].count == 0 {
-				delete(m.accountFailures, key)
+			} else if m.accountFailures[protectionKey].count == 0 {
+				delete(m.accountFailures, protectionKey)
 			}
 		} else {
-			delete(m.accountFailures, key)
+			delete(m.accountFailures, protectionKey)
 			for k := range m.failures {
 				if strings.HasPrefix(k, key+"#") {
 					delete(m.failures, k)
@@ -244,7 +263,7 @@ func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials,
 			m.makeTokenRoomLocked(key)
 			m.tokens[key] = tokenEntry{token: token, passwordHash: hash, expiresAt: now.Add(m.opts.TokenTTL), lastUsed: now}
 		}
-		delete(m.inflight, key)
+		delete(m.inflight, protectionKey)
 		close(done)
 		m.mu.Unlock()
 		return token, err

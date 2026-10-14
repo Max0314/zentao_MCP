@@ -19,7 +19,7 @@
 
 1. 47.108.48.50 上已有 SSH 账号，且本机公钥已加入（见《NeoFlow 服务器使用与维护说明》）。
 2. 已有索引服务账号 `mcpread`。先验证登录与产品可见范围，补齐所需历史产品的只读权限。只在迭代里加成员不一定覆盖全部产品。
-3. nginx 配置就位后执行 `nginx -t` 并 reload。账号失败保护在 Go 服务内生效；来源 IP 限流是可选的流量保护，不能替代账号保护。共享出口的多人客户端要按实际流量定参数。
+3. nginx 配置就位后执行 `nginx -t` 并 reload。入口登录校验、账号失败保护以及来源 IP、全局限流都在 Go 服务内生效。`auth.trusted_proxies` 填实际 Docker bridge 网关的 `/32`（IPv6 用 `/128`），nginx 必须覆盖 `X-Real-IP`。共享出口的多人客户端可按实际流量调整限流参数。
 4. 这台机器给本服务留 1.5~2GB 可用内存（索引常驻约 380MB，建索引时另有峰值）。
 
 ## 三、部署步骤
@@ -43,7 +43,8 @@ MCP_REVISION="<已推送的提交SHA>" docker compose build && docker compose up
 
 # 4. nginx 子路径反代
 cp deploy/cloud/zentao-mcp.nginx.conf ~/.nginx/zentao-mcp.conf
-openssl rand -hex 32          # 把输出填进那个文件的 X-Mcp-Key 占位符
+# 查看 nginx 到容器的直连来源，仅把实际网关 CIDR 写入 auth.trusted_proxies
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' zentao-mcp
 # 然后执行 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -55,7 +56,8 @@ openssl rand -hex 32          # 把输出填进那个文件的 X-Mcp-Key 占位�
 `.env` 中有 `$`、`#` 等字符的密码使用单引号包裹，保留字面值；不要打印
 `docker compose config` 或容器的完整环境变量，这些输出包含真实口令。
 
-首次部署用上述复制模板步骤；后续发布保留现有 `config.yaml`、`.env` 和 nginx 密钥。
+首次部署用上述复制模板步骤；后续发布保留现有 `config.yaml`、`.env`。公网不再需要共享入口密钥，客户端只需个人账号、密码。
+从旧版本迁移时，先部署入口认证的新代码，再移除 nginx 的 `X-Mcp-Key` 条件并 reload；迁移完成前旧入口保护仍生效。
 发布前先核对运行目录的源码是否与上次发布一致，再备份本机配置；只发布已提交、
 已推送版本的 `git archive`，不要打包整个工作目录。SSH 使用 39999 端口；
 Windows PowerShell 的密钥路径为 `D:\id_ed25519_max`，Git Bash 才使用 `/d/id_ed25519_max`。
@@ -66,12 +68,11 @@ Windows PowerShell 的密钥路径为 `D:\id_ed25519_max`，Git Bash 才使用 `
 ```bash
 # 链路通不通
 curl -s -o /dev/null -w "%{http_code}\n" -X POST \
-  -H "X-Mcp-Key: <你的key>" \
   https://neoflow-cn.neo-net.com/zentao-mcp/mcp
 ```
 
 - `401` —— 通了。这个 401 来自服务端的「缺认证头」分支，说明请求已经穿过 nginx 打到进程里。
-- `403` —— key 不对。
+- `429` —— 请求或登录触发保护，按 `Retry-After` 等待。
 - `404` —— nginx 子路径和 `config.yaml` 的 `name` 没对上。
 - `502` —— `.env` 的 `MCP_PORT` 和 nginx `proxy_pass` 的端口对不上（容器内端口固定 7892，不用管）。
 
@@ -96,7 +97,7 @@ docker compose logs --tail=50 zentao-mcp | grep -E 'server registered|bug index'
 1. 使用真实用户 Header 完成 MCP `initialize` 和 `tools/list`，确认 7 个 `zentao_*` 复合工具，包括 `zentao_find_similar_bugs`。
 2. 执行一次历史现象查询，再对命中 Bug 调 `zentao_analyze_bug`，确认详情和备注按调用者权限回查。
 3. 观察 `index.partial`、`index.lastRefreshFailed` 和 `notes`；不完整索引的“未命中”不能证明历史不存在。
-4. SSE 握手的 endpoint 必须包含 `/zentao-mcp/sse?sessionid=...`；入口不带 `X-Mcp-Key` 应为 `403`。
+4. SSE 握手的 endpoint 必须包含 `/zentao-mcp/sse?sessionid=...`；无凭据、错误密码和无效 token 均在初始化、工具列表、工具调用及 SSE 前返回 `401`。用不存在的测试账号检查拒绝与冷却，避免测试真实用户的错误密码导致锁号。
 
 2026-10-14 配置检查：`mcpread` 可见 421 个产品，内网索引账号可见 625 个，
 差 204 个产品。当前云上可以检索其已有权限范围；补齐产品权限后，重启或等下一次
@@ -116,11 +117,24 @@ auth:
   token_ttl: "24h"
   failure_ttl: "30m"
   max_cache_entries: 2048
+  request_rate: 60
+  request_burst: 120
+  ip_request_rate: 30
+  ip_request_burst: 60
+  login_rate: 4
+  login_burst: 8
+  ip_login_rate: 1
+  ip_login_burst: 3
+  trusted_proxies: ["<实际 Docker 网关>/32"]
 ```
 
 每类缓存都有容量上限与过期清理。token 按最近使用淘汰；活动账号保护桶不被淘汰，
 容量满时新账号登录暂时返回保护错误。不同账号的登录并行，同一账号的刷新合并，
 登录网络请求最多 30 秒。保护按单个进程生效；内外两套不共享计数。
+
+入口与业务访问、索引共用一个登录管理器。登录限流只统计需要访问禅道的新登录，缓存命中和已被账号保护挡住的请求不消耗登录预算；请求限流覆盖所有请求。账号名大小写和空格变体共享失败预算，token 缓存仍按原账号隔离。旧 token 模式每次入口请求用 `/user` 做有效性校验。
+
+`*_rate` 单位为每秒，`*_burst` 为瞬时容量；省略或零值使用上述默认值。每类来源 IP 保护最多保留 2048 个活动桶，空闲 10 分钟后清理，容量满时拒绝新来源，不淘汰活动桶来重置预算。只有 `trusted_proxies` 明确列出的直连来源才可使用 nginx 的 `X-Real-IP`；默认空列表使用直接连接 IP。
 
 ## 五、回滚
 

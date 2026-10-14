@@ -101,7 +101,13 @@ func main() {
 			exitCode = 1
 			return
 		}
-		httpClient := clients.NewHTTPClient(http.DefaultClient, sc.BaseURL, authOpts)
+		accessOpts, err := sc.accessOptions()
+		if err != nil {
+			slog.ErrorContext(ctx, "configure request protection", "server", sc.Name, "error", err)
+			exitCode = 1
+			return
+		}
+		httpClient, tokenManager := clients.NewHTTPClientWithAuth(http.DefaultClient, sc.BaseURL, authOpts)
 
 		loader := oapirepo.New(httpClient, sc.SchemaURL)
 		proxy := proxyrepo.New(httpClient)
@@ -165,9 +171,15 @@ func main() {
 
 		mcpH := newStreamableMCPHandler(server)
 		sseH := mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return server }, nil)
+		wrapAuth := middleware.NewAuthorizationHandler
+		if sc.ZentaoExtensions {
+			// Authentication precedes every MCP request, even those which do not
+			// access an upstream object (tools/list or a zero-hit index search).
+			wrapAuth = middleware.NewZentaoAuthenticator(tokenManager, accessOpts).Wrap
+		}
 
-		mux.Handle(pattern+"/mcp", middleware.NewLoggingHandler(middleware.NewAuthorizationHandler(mcpH)))
-		mux.Handle(pattern+"/sse", middleware.NewLoggingHandler(middleware.NewAuthorizationHandler(sseH)))
+		mux.Handle(pattern+"/mcp", middleware.NewLoggingHandler(wrapAuth(mcpH)))
+		mux.Handle(pattern+"/sse", middleware.NewLoggingHandler(wrapAuth(sseH)))
 
 		slog.InfoContext(ctx, "server registered", "name", sc.Name, "mcp", pattern+"/mcp", "sse", pattern+"/sse")
 	}
@@ -175,8 +187,10 @@ func main() {
 	health.SetReady(true)
 
 	srv := &http.Server{
-		Addr:    cfg.Port,
-		Handler: mux,
+		Addr:              cfg.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	go func() {

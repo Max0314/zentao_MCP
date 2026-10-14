@@ -130,6 +130,14 @@ const AuthFailureHeader = "X-Zentao-Auth-Failed"
 
 // WithZentaoAuth wraps an HTTP client to forward legacy tokens or manage Zentao user tokens.
 func WithZentaoAuth(c *http.Client, baseURL string, options ...ZentaoAuthOptions) *http.Client {
+	client, _ := NewZentaoAuthClient(c, baseURL, options...)
+	return client
+}
+
+// NewZentaoAuthClient shares one login manager between the MCP entry point,
+// business requests and the background index. Separate managers could each
+// consume the upstream account's failed-login budget.
+func NewZentaoAuthClient(c *http.Client, baseURL string, options ...ZentaoAuthOptions) (*http.Client, *ZentaoTokenManager) {
 	if c == nil {
 		c = http.DefaultClient
 	}
@@ -146,13 +154,14 @@ func WithZentaoAuth(c *http.Client, baseURL string, options ...ZentaoAuthOptions
 		Timeout:       c.Timeout,
 	}
 
+	manager := NewZentaoTokenManager(baseURL, loginClient, options...)
 	return &http.Client{
 		Transport: &authTransport{
 			base:         base,
-			tokenManager: NewZentaoTokenManager(baseURL, loginClient, options...),
+			tokenManager: manager,
 		},
 		CheckRedirect: c.CheckRedirect,
 		Jar:           c.Jar,
 		Timeout:       c.Timeout,
-	}
+	}, manager
 }

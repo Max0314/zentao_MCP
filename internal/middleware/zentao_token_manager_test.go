@@ -25,6 +25,23 @@ func rejectingManager(t *testing.T, opts ZentaoAuthOptions) (*ZentaoTokenManager
 	return NewZentaoTokenManager(srv.URL, srv.Client(), opts), attempts
 }
 
+func TestAccountBudgetCannotBeBypassedByNameVariants(t *testing.T) {
+	m, attempts := rejectingManager(t, ZentaoAuthOptions{})
+	for i, account := range []string{"Alice", " ALICE ", "alice"} {
+		_, err := m.Token(context.Background(), ZentaoCredentials{Account: account, Password: strconv.Itoa(i)})
+		var loginErr *ZentaoLoginError
+		if !errors.As(err, &loginErr) {
+			t.Fatal(err)
+		}
+		if i == 2 && loginErr.StatusCode != http.StatusTooManyRequests {
+			t.Fatal("name variant bypassed account budget")
+		}
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("upstream attempts=%d", attempts.Load())
+	}
+}
+
 func TestAccountBudgetCannotBeBypassedByChangingPasswords(t *testing.T) {
 	m, attempts := rejectingManager(t, ZentaoAuthOptions{})
 	now := time.Unix(1000, 0)

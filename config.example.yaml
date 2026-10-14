@@ -30,6 +30,17 @@ servers:
       token_ttl: "24h"
       failure_ttl: "30m"
       max_cache_entries: 2048
+      # 所有 MCP 请求及新登录分别限流；rate 单位为每秒，burst 为瞬时容量。
+      request_rate: 60
+      request_burst: 120
+      ip_request_rate: 30
+      ip_request_burst: 60
+      login_rate: 4
+      login_burst: 8
+      ip_login_rate: 1
+      ip_login_burst: 3
+      # 直连部署留空；反代部署只填实际代理来源 CIDR，才信任 X-Real-IP。
+      trusted_proxies: []
     # 历史问题检索（zentao_find_similar_bugs）。禅道 v1 没有任何文本检索接口，
     # 所以服务端自建一份内存倒排索引：启动时拉全量 Bug，之后按 refresh 周期刷新。
     # 实测 17,684 条 Bug：拉取约 50s、建索引约 2.4s、查询约 30ms。

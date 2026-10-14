@@ -1,9 +1,23 @@
 package main
 
 import (
+	"math"
 	"testing"
 	"time"
 )
+
+func TestAccessConfigValidatesRatesAndTrustedProxies(t *testing.T) {
+	s := ServerConfig{Auth: &ZentaoAuthConfig{RequestRate: 20, IPRequestRate: 5, LoginRate: 2, IPLoginRate: 0.5, TrustedProxies: []string{"192.168.160.1/32"}}}
+	o, err := s.accessOptions()
+	if err != nil || o.IPLoginRate != 0.5 || len(o.TrustedProxies) != 1 {
+		t.Fatalf("parsed options=%+v err=%v", o, err)
+	}
+	for _, cfg := range []*ZentaoAuthConfig{{RequestRate: -1}, {LoginRate: math.NaN()}, {IPLoginRate: math.Inf(1)}, {IPRequestBurst: -1}, {TrustedProxies: []string{"all"}}} {
+		if _, err := (ServerConfig{Auth: cfg}).accessOptions(); err == nil {
+			t.Fatalf("invalid protection config accepted: %+v", cfg)
+		}
+	}
+}
 
 func TestAuthConfigDefaultsAndOverrides(t *testing.T) {
 	if _, err := (ServerConfig{}).authOptions(); err != nil {

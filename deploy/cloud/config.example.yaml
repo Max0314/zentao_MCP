@@ -36,6 +36,17 @@ servers:
       token_ttl: "24h"
       failure_ttl: "30m"
       max_cache_entries: 2048
+      request_rate: 60
+      request_burst: 120
+      ip_request_rate: 30
+      ip_request_burst: 60
+      login_rate: 4
+      login_burst: 8
+      ip_login_rate: 1
+      ip_login_burst: 3
+      # 按部署说明把实际 Docker bridge 网关写成 /32（IPv6 用 /128）。
+      # 未填写时使用直连代理 IP，所有公网用户会共享该 IP 的预算。
+      trusted_proxies: []
     bug_index:
       enabled: true
       # 不要用 admin：这个口令要落在一台公网机器的 .env 里。

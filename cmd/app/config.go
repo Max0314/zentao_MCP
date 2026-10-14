@@ -4,6 +4,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
+	"net/netip"
 	"os"
 	"regexp"
 	"time"
@@ -49,11 +51,50 @@ type ServerConfig struct {
 
 // ZentaoAuthConfig tunes login protection to the upstream account-lock policy.
 type ZentaoAuthConfig struct {
-	FailureLimit    int    `yaml:"failure_limit"`
-	FailureWindow   string `yaml:"failure_window"`
-	TokenTTL        string `yaml:"token_ttl"`
-	FailureTTL      string `yaml:"failure_ttl"`
-	MaxCacheEntries int    `yaml:"max_cache_entries"`
+	FailureLimit    int      `yaml:"failure_limit"`
+	FailureWindow   string   `yaml:"failure_window"`
+	TokenTTL        string   `yaml:"token_ttl"`
+	FailureTTL      string   `yaml:"failure_ttl"`
+	MaxCacheEntries int      `yaml:"max_cache_entries"`
+	RequestRate     float64  `yaml:"request_rate"`
+	RequestBurst    int      `yaml:"request_burst"`
+	IPRequestRate   float64  `yaml:"ip_request_rate"`
+	IPRequestBurst  int      `yaml:"ip_request_burst"`
+	LoginRate       float64  `yaml:"login_rate"`
+	LoginBurst      int      `yaml:"login_burst"`
+	IPLoginRate     float64  `yaml:"ip_login_rate"`
+	IPLoginBurst    int      `yaml:"ip_login_burst"`
+	TrustedProxies  []string `yaml:"trusted_proxies"`
+}
+
+func (s ServerConfig) accessOptions() (middleware.ZentaoAccessOptions, error) {
+	var o middleware.ZentaoAccessOptions
+	if s.Auth == nil {
+		return o, nil
+	}
+	a := s.Auth
+	for _, value := range []float64{a.RequestRate, a.IPRequestRate, a.LoginRate, a.IPLoginRate} {
+		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return o, errors.New("auth request/login rates must be positive or omitted")
+		}
+	}
+	for _, value := range []int{a.RequestBurst, a.IPRequestBurst, a.LoginBurst, a.IPLoginBurst} {
+		if value < 0 {
+			return o, errors.New("auth request/login bursts must be positive or omitted")
+		}
+	}
+	o.RequestRate, o.RequestBurst = a.RequestRate, a.RequestBurst
+	o.IPRequestRate, o.IPRequestBurst = a.IPRequestRate, a.IPRequestBurst
+	o.LoginRate, o.LoginBurst = a.LoginRate, a.LoginBurst
+	o.IPLoginRate, o.IPLoginBurst = a.IPLoginRate, a.IPLoginBurst
+	for _, cidr := range a.TrustedProxies {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return o, fmt.Errorf("invalid auth.trusted_proxies CIDR: %q", cidr)
+		}
+		o.TrustedProxies = append(o.TrustedProxies, prefix)
+	}
+	return o, nil
 }
 
 func (s ServerConfig) authOptions() (middleware.ZentaoAuthOptions, error) {

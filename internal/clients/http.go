@@ -36,6 +36,13 @@ const (
 
 // NewHTTPClient creates an HTTP client with Zentao auth transport.
 func NewHTTPClient(base *http.Client, baseURL string, options ...middleware.ZentaoAuthOptions) *http.Client {
+	client, _ := NewHTTPClientWithAuth(base, baseURL, options...)
+	return client
+}
+
+// NewHTTPClientWithAuth exposes the same manager used by the transport so the
+// incoming authentication gate can reuse tokens and account protection.
+func NewHTTPClientWithAuth(base *http.Client, baseURL string, options ...middleware.ZentaoAuthOptions) (*http.Client, *middleware.ZentaoTokenManager) {
 	if base == nil {
 		base = http.DefaultClient
 	}
@@ -49,7 +56,7 @@ func NewHTTPClient(base *http.Client, baseURL string, options ...middleware.Zent
 		base = &tuned
 	}
 
-	return middleware.WithZentaoAuth(base, baseURL, options...)
+	return middleware.NewZentaoAuthClient(base, baseURL, options...)
 }
 
 // newUpstreamTransport clones the standard transport and widens its idle
