@@ -1,33 +1,35 @@
 # 禅道 MCP 使用说明
 
-本文说明如何在 Codex 中使用禅道 MCP，覆盖测试环境、正式环境、账号密码认证、常用操作示例和常见问题排查。
+本文说明如何安装和使用禅道 MCP。日常优先连接公网正式服务；内网正式服务保留为兜底，测试库仅在公司内网可用。
 
 ## 1. 环境说明
 
-当前 MCP 服务统一部署在：
-
-```text
-http://10.70.2.73:7892
-```
-
-已配置两个禅道环境：
+服务地址与上游环境：
 
 | MCP 名称 | MCP 地址 | 上游禅道环境 | 说明 |
 |---|---|---|---|
+| `zentao-cloud` | `https://neoflow-cn.neo-net.com/zentao-mcp/mcp` | 正式禅道的公网 API 入口 | **默认使用**，无需公司内网；需要 `X-Mcp-Key` 和个人禅道凭据 |
 | `zentao` | `http://10.70.2.73:7892/zentao/mcp` | `http://10.70.33.19/biz/api.php/v1` | **正式库**，日常默认用这个。已禁用删除接口 |
 | `zentao-sandbox` | `http://10.70.2.73:7892/zentao-sandbox/mcp` | `http://10.70.33.18/biz/api.php/v1` | 测试库，写操作演练用。账号密码与正式库不同 |
 
 > **旧名字已废弃**：`zentao-test` 曾经指向的是**正式库**、`zentao-prod` 指向测试库，两者是反的。
 > 这两个名字已被删除而不是重新指向——继续用旧地址会直接报 404，请改成上表的新地址。
 
-在 Codex 中加载后，对应工具命名空间通常显示为：
+客户端显示名可以自定，服务 URL 必须与上表一致。Streamable HTTP 使用 `/mcp`，SSE 使用 `/sse`，两者不能混配。日常使用时直接用自然语言说明环境和操作即可。
 
-```text
-mcp__zentao
-mcp__zentao_sandbox
-```
+### 1.1 千问办公等图形客户端
 
-日常使用时不需要直接写工具名，直接用自然语言说明环境和操作即可。
+选择 `Streamable HTTP`，URL 填公网地址，添加三个 Headers：
+
+| Header 名 | 值 | 用途 |
+|---|---|---|
+| `X-Mcp-Key` | 维护者提供的访问密钥 | 通过公网 nginx 的入口保护 |
+| `zentao-account` | 用户自己的正式禅道账号 | 决定可读、可写范围 |
+| `zentao-password` | 该用户的正式禅道密码 | 服务端自动换取并刷新 token |
+
+也可用 `token` 替代最后两个 Header，公网仍需要 `X-Mcp-Key`。索引用的 `mcpread` 是服务器专用账号，不需要发给全员共用；扩大索引账号权限不会扩大调用者权限。
+
+Headers 的普通键/值栏填写实际值；“来自环境变量的标头”栏右侧填写变量名。推荐工具超时 120 秒，保存后重新连接服务。
 
 ## 2. Codex 配置
 
@@ -36,23 +38,45 @@ mcp__zentao_sandbox
 ```toml
 [mcp_servers.zentao]
 enabled = true
+url = "https://neoflow-cn.neo-net.com/zentao-mcp/mcp"
+tool_timeout_sec = 120
+env_http_headers = { "X-Mcp-Key" = "ZENTAO_MCP_KEY", "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "ZENTAO_PASSWORD" }
+
+[mcp_servers.zentao-intranet]
+enabled = false
 url = "http://10.70.2.73:7892/zentao/mcp"
 env_http_headers = { "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "ZENTAO_PASSWORD" }
 
 [mcp_servers.zentao-sandbox]
-enabled = true
+enabled = false
 url = "http://10.70.2.73:7892/zentao-sandbox/mcp"
-env_http_headers = { "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "ZENTAO_PASSWORD" }
+env_http_headers = { "zentao-account" = "ZENTAO_SANDBOX_ACCOUNT", "zentao-password" = "ZENTAO_SANDBOX_PASSWORD" }
 ```
 
-本机需要设置两个环境变量：
+配置保存在用户的 `~/.codex/config.toml`。默认公网服务需要设置三个环境变量：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("ZENTAO_ACCOUNT", "你的禅道账号", "User")
 [Environment]::SetEnvironmentVariable("ZENTAO_PASSWORD", "你的禅道密码", "User")
+[Environment]::SetEnvironmentVariable("ZENTAO_MCP_KEY", "维护者提供的访问密钥", "User")
 ```
 
-设置后重启 Codex，让 Codex 重新读取环境变量和 MCP 配置。
+上面是占位示例，不要把真实值提交到项目或放进共享截图。环境变量没有目录要求，User 作用域持久保存；设置后完全退出并重启 Codex。测试库使用单独的两项 `ZENTAO_SANDBOX_*`，正式和测试密码不能混用。
+
+配置字段已按 [OpenAI 官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)核对：`http_headers` 放字面值，`env_http_headers` 放环境变量名。
+
+### 2.1 给安装 Agent 的提示词
+
+```text
+请在我的客户端配置禅道 MCP：Streamable HTTP，地址为
+https://neoflow-cn.neo-net.com/zentao-mcp/mcp。
+配置 X-Mcp-Key、zentao-account、zentao-password 三个请求头；凭据由我在本地填写，
+不要输出密码、密钥或 token，不要写入项目仓库。Codex 使用 env_http_headers 时，
+右侧填写变量名。配置后提示重新连接，通过客户端实际连接获取工具列表，
+确认 zentao_find_similar_bugs 存在，并执行一次只读历史 Bug 查询。
+内网 curl 只能从能访问内网的电脑执行；云端沙箱内网不通不能证明本机客户端失败。
+正式库是 zentao，sandbox 是另一套密码，默认不要启用 sandbox。
+```
 
 ## 3. 兼容旧 Token 模式
 
@@ -61,8 +85,8 @@ env_http_headers = { "zentao-account" = "ZENTAO_ACCOUNT", "zentao-password" = "Z
 ```toml
 [mcp_servers.zentao]
 enabled = true
-url = "http://10.70.2.73:7892/zentao/mcp"
-env_http_headers = { token = "ZENTAO_TOKEN" }
+url = "https://neoflow-cn.neo-net.com/zentao-mcp/mcp"
+env_http_headers = { "X-Mcp-Key" = "ZENTAO_MCP_KEY", token = "ZENTAO_TOKEN" }
 ```
 
 认证优先级：
@@ -99,6 +123,7 @@ env_http_headers = { token = "ZENTAO_TOKEN" }
 
 | 工具 | 用途 |
 |---|---|
+| `zentao_find_similar_bugs` | 根据现场现象跨产品查历史 Bug，返回候选及真实修复过程；需要索引已启用 |
 | `zentao_resolve_scope` | 按名字找产品、项目、执行、人员的 ID |
 | `zentao_search_bugs` | 跨范围查 Bug，支持关键字、责任人、日期、严重程度过滤，并返回分布统计 |
 | `zentao_analyze_bug` | 单个 Bug 的问题分析：时间线、备注、修复时长、重新激活次数、相似 Bug |
@@ -272,6 +297,15 @@ url = "http://10.70.2.73:7892/zentao/mcp"
 
 账号密码模式下，MCP 服务端会自动通过禅道 v1 token 接口登录，不需要用户手动刷新 token。
 
+### 9.2.1 公网 `403`、登录 `429` 或相似检索没有出现
+
+- 公网 `403`：先检查 `X-Mcp-Key`；密钥缺失或错误时请求还没有到 MCP。
+- 带入口密钥但 `401 / no OAuth metadata found`：检查个人禅道 Header 是否发送。本服务使用 Header 认证，不能用 OAuth 登录补救缺少的 Header。
+- 工具错误包含登录保护 `429`：同一账号已经达到失败上限。停止重试，核对正式/测试地址和密码，按错误中的 `retryAfterSeconds` 等待；改不同的错误密码不会绕过保护。
+- 没有 `zentao_find_similar_bugs`：维护者检查索引开关、服务账号和容器内 `ZENTAO_INDEX_PASSWORD` 是否非空。
+- 工具存在但提示“首次构建”：等待索引完成；“构建失败”应查日志和权限，不能反复请求期待自行变好。
+- `index.partial=true`：本次索引有截断或读取失败；不能把“未命中”当作历史上没有此问题。即使 `partial=false`，索引也只覆盖服务账号可见范围。
+
 ### 9.3 输出 schema 校验失败
 
 禅道 v1 实际返回字段类型有时和 OpenAPI 文档不一致，例如数字可能返回字符串、对象可能返回空字符串。服务端已做兼容处理；如果仍遇到类似：
@@ -301,11 +335,23 @@ POST /executions/{executionID}/tasks
 服务端 token 管理逻辑：
 
 1. 客户端传入 `zentao-account` 和 `zentao-password`。
-2. MCP 服务端按 `base_url + account` 缓存 token。
+2. MCP 服务端按 `base_url + account` 缓存 token，核对密码摘要，默认有效期 24 小时。
 3. token 只存在内存，不落盘。
 4. 首次请求自动登录禅道。
-5. 上游返回 `401` 时清除缓存，重新登录并重试一次。
+5. 上游返回 `401` 时合并同一账号的并发刷新，重新登录并重试一次；不同账号不互相等待网络登录。
 6. 重试仍失败时返回上游错误。
+7. 按凭据退避保留，同时默认同一账号累计两次登录拒绝后暂停新的登录；从最后一次实际拒绝起冷却 10 分钟。有效缓存会话仍可用，错误密码不清除正常会话。
+8. token、凭据失败和账号保护缓存分别最多 2,048 条。查询时清理过期项；token 按最近使用淘汰，活动账号保护桶不淘汰，满时拒绝新账号登录。凭据失败默认保留 30 分钟。
+
+可在 server 下配置 `auth` 的 `failure_limit`、`failure_window`、`token_ttl`、`failure_ttl`、`max_cache_entries`。失败阈值应低于禅道真实锁号阈值；保护按进程生效，不等于禅道所有入口共享的全局锁号策略。
+
+`config.yaml` 改动需要重启进程；`.env` 改动需要重新创建容器：
+
+```bash
+docker compose up -d --force-recreate zentao-mcp
+```
+
+`docker compose restart` 不会重新注入环境变量。云上完整发布与回滚见 [部署说明](../deploy/cloud/README.md)。
 
 日志脱敏字段包括：
 

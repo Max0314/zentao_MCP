@@ -30,17 +30,24 @@ servers:
     skip_deprecated: true
     zentao_extensions: true
     publish_output_schema: false
+    auth:
+      failure_limit: 2
+      failure_window: "10m"
+      token_ttl: "24h"
+      failure_ttl: "30m"
+      max_cache_entries: 2048
     bug_index:
       enabled: true
       # 不要用 admin：这个口令要落在一台公网机器的 .env 里。
       # 换一个只读的专用账号，可见范围尽量和 admin 一致（召回率取决于它能看到多少产品），
       # 但不给任何写权限。
-      account: "mcp-readonly"
+      account: "mcpread"
       password_env: "ZENTAO_INDEX_PASSWORD"
       refresh: "6h"
       body_chars: 400
       max_products: 700
-      max_bugs_per_product: 5000
+      # 分页不再固定最多 50 页。按产品实际 total 设置预算；超预算会明确提示 partial。
+      max_bugs_per_product: 8000
     allow:
       - methods: ["GET", "POST", "PUT", "DELETE"]
         regex: ".*"

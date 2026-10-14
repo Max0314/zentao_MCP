@@ -95,7 +95,13 @@ func main() {
 	for i := range cfg.Servers {
 		sc := &cfg.Servers[i]
 
-		httpClient := clients.NewHTTPClient(http.DefaultClient, sc.BaseURL)
+		authOpts, err := sc.authOptions()
+		if err != nil {
+			slog.ErrorContext(ctx, "configure login protection", "server", sc.Name, "error", err)
+			exitCode = 1
+			return
+		}
+		httpClient := clients.NewHTTPClient(http.DefaultClient, sc.BaseURL, authOpts)
 
 		loader := oapirepo.New(httpClient, sc.SchemaURL)
 		proxy := proxyrepo.New(httpClient)

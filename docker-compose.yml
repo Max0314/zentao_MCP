@@ -4,6 +4,7 @@ services:
       context: .
       args:
         GOPROXY: https://goproxy.cn,direct
+        VCS_REF: ${MCP_REVISION:-unknown}
     container_name: zentao-mcp
     restart: unless-stopped
     command: ["/zentao-mcp", "-config", "/config.yaml"]

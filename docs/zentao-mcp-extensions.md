@@ -195,7 +195,7 @@ DeviceInfo.SpecVersion 节点参数异常
 返回的每个字段都来自这次授权读取。
 
 返回内容包括标题、类型、严重程度、解决方案、解决人、重现步骤摘要、
-**当时的解决说明**（`fixNote`，取自 resolved 动作的备注）、备注数和重新激活次数。
+**当时的解决说明**（`fixNote`，优先 resolved 备注，否则取解决前最后一条 commented 备注，再回退到最后一条备注）、备注数和重新激活次数。
 拿到候选后可再对最像的 1-3 条调 `zentao_analyze_bug` 看完整时间线。
 
 工具只做词面相似，不做语义判断——是否真的同一个问题，仍需人工或模型确认。
@@ -238,7 +238,16 @@ DeviceInfo.SpecVersion 节点参数异常
 | 落盘 | **不落盘**。容器重启即重建 |
 
 `max_products` 和 `max_bugs_per_product` 必须覆盖服务账号的实际可见范围，
-否则多出来的部分静默不进索引。先查 `GET /products?limit=1` 的 `total` 再定值。
+否则多出来的部分不进索引，并在构建日志与结果的 `index.partial` 中明确提示。
+固定 50 页上限已移除，按 `maxScan` 抓取；分页重叠按 ID 去重，重复页无新 ID
+会停止并提示截断。刚好满页且总数已取完不会被误判为截断。
+先查 `GET /products?limit=1` 的 `total` 与每个产品的 Bug `total` 再定值。
+
+`index.productListTruncated`、`truncatedProducts`、`failedProducts` 表示当前索引
+的覆盖缺口；`lastRefreshFailed` 表示最近一次刷新失败、保留了旧索引。
+这些状态也会写入 `notes`，包括未命中查询。若首次构建大量读取失败，工具明确报
+构建失败；不会将失败误报为“构建成功但为空”。账号自身无权看到的产品不会出现在
+`/products`，因此仍需由管理员对比账号权限范围，`partial=false` 不等于全公司全量。
 
 ### 权限模型（重要）
 

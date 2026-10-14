@@ -35,7 +35,7 @@ const (
 )
 
 // NewHTTPClient creates an HTTP client with Zentao auth transport.
-func NewHTTPClient(base *http.Client, baseURL string) *http.Client {
+func NewHTTPClient(base *http.Client, baseURL string, options ...middleware.ZentaoAuthOptions) *http.Client {
 	if base == nil {
 		base = http.DefaultClient
 	}
@@ -49,7 +49,7 @@ func NewHTTPClient(base *http.Client, baseURL string) *http.Client {
 		base = &tuned
 	}
 
-	return middleware.WithZentaoAuth(base, baseURL)
+	return middleware.WithZentaoAuth(base, baseURL, options...)
 }
 
 // newUpstreamTransport clones the standard transport and widens its idle

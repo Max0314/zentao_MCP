@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 type authTransport struct {
@@ -110,6 +112,9 @@ func loginErrorResponse(req *http.Request, err error) (*http.Response, error) {
 	// reporting a locked account as "you lack permission" sends people
 	// chasing access requests instead of unlocking the account.
 	header.Set(AuthFailureHeader, "1")
+	if loginErr.RetryAfter > 0 {
+		header.Set("Retry-After", strconv.Itoa(max(1, int(loginErr.RetryAfter/time.Second))))
+	}
 
 	return &http.Response{
 		StatusCode: loginErr.StatusCode,
@@ -124,7 +129,7 @@ func loginErrorResponse(req *http.Request, err error) (*http.Response, error) {
 const AuthFailureHeader = "X-Zentao-Auth-Failed"
 
 // WithZentaoAuth wraps an HTTP client to forward legacy tokens or manage Zentao user tokens.
-func WithZentaoAuth(c *http.Client, baseURL string) *http.Client {
+func WithZentaoAuth(c *http.Client, baseURL string, options ...ZentaoAuthOptions) *http.Client {
 	if c == nil {
 		c = http.DefaultClient
 	}
@@ -144,7 +149,7 @@ func WithZentaoAuth(c *http.Client, baseURL string) *http.Client {
 	return &http.Client{
 		Transport: &authTransport{
 			base:         base,
-			tokenManager: NewZentaoTokenManager(baseURL, loginClient),
+			tokenManager: NewZentaoTokenManager(baseURL, loginClient, options...),
 		},
 		CheckRedirect: c.CheckRedirect,
 		Jar:           c.Jar,

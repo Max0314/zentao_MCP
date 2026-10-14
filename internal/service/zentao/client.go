@@ -20,7 +20,6 @@ import (
 const (
 	maxResponseSize = 10 << 20
 	defaultPageSize = 100
-	maxPages        = 50
 )
 
 var (
@@ -133,9 +132,10 @@ func (s *Service) detail(ctx context.Context, apiPath, wrapKey string) (map[stri
 
 // listResult holds one paged scan over a ZenTao collection endpoint.
 type listResult struct {
-	Records   []map[string]any
-	Total     int
-	Truncated bool
+	Records          []map[string]any
+	Total            int
+	Truncated        bool
+	TruncationReason string
 }
 
 // listAll pages through a ZenTao collection endpoint up to maxScan records.
@@ -151,7 +151,9 @@ func (s *Service) listAll(ctx context.Context, apiPath string, query url.Values,
 		pageSize = maxScan
 	}
 
-	for page := 1; page <= maxPages; page++ {
+	seen := make(map[int]struct{})
+	hasTotal := false
+	for page := 1; ; page++ {
 		q := url.Values{}
 
 		for k, vs := range query {
@@ -166,31 +168,50 @@ func (s *Service) listAll(ctx context.Context, apiPath string, query url.Values,
 			return res, err
 		}
 
-		if total, ok := toInt(data["total"]); ok && total > res.Total {
-			res.Total = total
+		if total, ok := toInt(data["total"]); ok && total > 0 {
+			hasTotal = true
+			res.Total = max(res.Total, total)
 		}
 
 		items := pickList(data)
-		res.Records = append(res.Records, items...)
-
-		if len(items) < pageSize {
+		before := len(res.Records)
+		for _, rec := range items {
+			if id := fieldInt(rec, "id"); id > 0 {
+				if _, exists := seen[id]; exists {
+					continue
+				}
+				seen[id] = struct{}{}
+			}
+			if len(res.Records) >= maxScan {
+				res.Truncated, res.TruncationReason = true, "max_scan"
+				break
+			}
+			res.Records = append(res.Records, rec)
+		}
+		if res.Truncated {
 			break
 		}
-
-		if len(res.Records) >= maxScan || page == maxPages {
-			res.Truncated = true
-
+		if len(items) == 0 || len(items) < pageSize || (hasTotal && res.Total > 0 && res.Total <= len(res.Records)) {
 			break
 		}
-	}
-
-	if len(res.Records) > maxScan {
-		res.Records = res.Records[:maxScan]
-		res.Truncated = true
+		if len(res.Records) == before {
+			res.Truncated, res.TruncationReason = true, "pagination_no_progress"
+			break
+		}
+		// The caller's record budget is the bound, not an unrelated 50-page
+		// ceiling. If total is absent, one extra page confirms whether an exact
+		// full last page really exhausted the collection.
+		if len(res.Records) >= maxScan && hasTotal {
+			res.Truncated, res.TruncationReason = true, "max_scan"
+			break
+		}
 	}
 
 	if res.Total > len(res.Records) {
 		res.Truncated = true
+		if res.TruncationReason == "" {
+			res.TruncationReason = "upstream_incomplete_page"
+		}
 	}
 
 	return res, nil
@@ -282,8 +303,8 @@ func collectionPath(scope string, id int, collection string) (string, error) {
 	}
 
 	allowed := map[string]map[string]bool{
-		"product": {"bugs": true, "stories": true, "testcases": true, "releases": true},
-		"project": {"bugs": true, "stories": true, "testcases": true, "testtasks": true, "builds": true, "executions": true},
+		"product":   {"bugs": true, "stories": true, "testcases": true, "releases": true},
+		"project":   {"bugs": true, "stories": true, "testcases": true, "testtasks": true, "builds": true, "executions": true},
 		"execution": {"bugs": true, "stories": true, "testcases": true, "tasks": true, "builds": true},
 	}
 

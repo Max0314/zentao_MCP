@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/merzzzl/openapi-mcp-server/internal/middleware"
 	"github.com/merzzzl/openapi-mcp-server/internal/models"
 	"gopkg.in/yaml.v3"
 )
@@ -37,12 +38,51 @@ type ServerConfig struct {
 	// AI score, problem analysis) for this upstream.
 	ZentaoExtensions bool `yaml:"zentao_extensions"`
 	// BugIndex enables the historical symptom lookup tool for this upstream.
-	BugIndex *BugIndexConfig `yaml:"bug_index"`
+	BugIndex *BugIndexConfig   `yaml:"bug_index"`
+	Auth     *ZentaoAuthConfig `yaml:"auth"`
 	// PublishOutputSchema declares generated output schemas. Defaults to true.
 	// On the bundled ZenTao document these schemas are ~90% of the tools/list
 	// payload, so setting it to false cuts the per-session tool cost sharply
 	// at the price of losing structured content.
 	PublishOutputSchema *bool `yaml:"publish_output_schema"`
+}
+
+// ZentaoAuthConfig tunes login protection to the upstream account-lock policy.
+type ZentaoAuthConfig struct {
+	FailureLimit    int    `yaml:"failure_limit"`
+	FailureWindow   string `yaml:"failure_window"`
+	TokenTTL        string `yaml:"token_ttl"`
+	FailureTTL      string `yaml:"failure_ttl"`
+	MaxCacheEntries int    `yaml:"max_cache_entries"`
+}
+
+func (s ServerConfig) authOptions() (middleware.ZentaoAuthOptions, error) {
+	var o middleware.ZentaoAuthOptions
+	if s.Auth == nil {
+		return o, nil
+	}
+	if s.Auth.FailureLimit < 0 || s.Auth.MaxCacheEntries < 0 {
+		return o, errors.New("auth failure_limit and max_cache_entries must be positive or omitted")
+	}
+	o.FailureLimit, o.MaxCacheEntries = s.Auth.FailureLimit, s.Auth.MaxCacheEntries
+	for _, field := range []struct {
+		name, value string
+		target      *time.Duration
+	}{
+		{"failure_window", s.Auth.FailureWindow, &o.FailureWindow},
+		{"token_ttl", s.Auth.TokenTTL, &o.TokenTTL},
+		{"failure_ttl", s.Auth.FailureTTL, &o.FailureTTL},
+	} {
+		if field.value == "" {
+			continue
+		}
+		d, err := time.ParseDuration(field.value)
+		if err != nil || d <= 0 {
+			return o, fmt.Errorf("auth.%s must be a positive duration", field.name)
+		}
+		*field.target = d
+	}
+	return o, nil
 }
 
 // BugIndexConfig configures the background bug corpus used by

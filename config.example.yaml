@@ -13,7 +13,7 @@ servers:
   # 名字必须和实际环境一致：指向正式库就别叫 test。
   - name: zentao
     schema_url: "zentao-openapi.json 的完整路径"
-    base_url: "https://您的禅道域名/api.php/v2"
+    base_url: "https://您的禅道域名/biz/api.php/v1"
     # 跳过 OpenAPI 中标记 deprecated 的接口。随附的禅道文档用它标记
     # 12.3 v1 不支持的路由，开启后可少注册 12 个必然失败的工具。
     skip_deprecated: true
@@ -24,6 +24,12 @@ servers:
     # 对象 schema，实测占 tools/list 报文的 91.6%；设为 false 可把工具报文
     # 从约 808 KB 降到约 67 KB，完整 JSON 仍在文本内容里返回。
     publish_output_schema: false
+    auth:
+      failure_limit: 2
+      failure_window: "10m"
+      token_ttl: "24h"
+      failure_ttl: "30m"
+      max_cache_entries: 2048
     # 历史问题检索（zentao_find_similar_bugs）。禅道 v1 没有任何文本检索接口，
     # 所以服务端自建一份内存倒排索引：启动时拉全量 Bug，之后按 refresh 周期刷新。
     # 实测 17,684 条 Bug：拉取约 50s、建索引约 2.4s、查询约 30ms。
@@ -40,10 +46,10 @@ servers:
       password_env: "ZENTAO_INDEX_PASSWORD"
       refresh: "6h"
       body_chars: 400
-      # 这两个上限必须覆盖服务账号的实际可见范围，否则多出来的部分静默不进索引。
+      # 这两个上限必须覆盖服务账号的实际可见范围；不足时日志和 index.partial 会提示截断。
       # 先确认账号能看到多少产品：GET /products?limit=1 的 total。
       max_products: 700
-      max_bugs_per_product: 5000
+      max_bugs_per_product: 8000
     allow:
       - methods: ["GET", "POST", "PUT", "DELETE"]
         regex: ".*"

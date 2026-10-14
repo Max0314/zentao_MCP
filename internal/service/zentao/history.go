@@ -24,7 +24,6 @@ const (
 	maxFailedScanPercent = 20
 	// indexConcurrency bounds the parallel product scans of one build.
 	indexConcurrency = 8
-	indexPageSize    = 100
 
 	defaultSimilarLimit = 8
 	maxSimilarLimit     = 25
@@ -130,23 +129,22 @@ func (s *Service) refreshIndex(ctx context.Context) {
 	// The builder runs as the service account, not as any caller.
 	buildCtx := middleware.WithZentaoCredentials(ctx, s.indexOpts.Account, s.indexOpts.Password)
 
-	docs, scanned, failed, err := s.buildCorpus(buildCtx)
+	docs, scanned, failed, coverage, err := s.buildCorpus(buildCtx)
 	if err != nil {
-		s.buildState.Store(&buildState{done: true, err: err, at: time.Now()})
+		s.recordBuildFailure(err)
 
 		s.logger.ErrorContext(ctx, "bug index build failed", "error", err, "elapsed", time.Since(start).String())
 
 		return
 	}
 
-	s.buildState.Store(&buildState{done: true, at: time.Now()})
-
 	// Never trade a healthy corpus for a degraded one. Per-product scan
 	// failures are individually survivable, but when the service account's
 	// token expires mid-build most products fail at once; swapping that in
 	// silently shrank every symptom lookup to a fraction of the corpus and
 	// looked exactly like "no similar bug exists".
-	if failed*100 >= scanned*maxFailedScanPercent && s.index.Len() > len(docs) {
+	if failed > 0 && failed*100 >= scanned*maxFailedScanPercent {
+		s.recordBuildFailure(fmt.Errorf("%d/%d product scans failed; previous index retained", failed, scanned))
 		s.logger.ErrorContext(ctx, "bug index refresh abandoned: too many product scans failed",
 			"failed", failed,
 			"products", scanned,
@@ -158,22 +156,46 @@ func (s *Service) refreshIndex(ctx context.Context) {
 	}
 
 	s.index.Replace(docs)
+	s.buildState.Store(&buildState{done: true, at: time.Now(), coverage: coverage})
 
 	s.logger.InfoContext(ctx, "bug index built",
 		"documents", len(docs),
 		"products", scanned,
 		"failed_products", failed,
+		"truncated_products", coverage.TruncatedProducts,
+		"product_list_truncated", coverage.ProductListTruncated,
 		"elapsed", time.Since(start).String(),
 	)
+}
+
+func (s *Service) recordBuildFailure(err error) {
+	state := &buildState{done: true, err: err, at: time.Now()}
+	if previous := s.buildState.Load(); previous != nil {
+		state.coverage = previous.coverage
+	}
+	s.buildState.Store(state)
+}
+
+type corpusCoverage struct {
+	ProductListTruncated bool
+	TruncatedProducts    int
+	FailedProducts       int
 }
 
 // buildCorpus pulls every readable bug into indexable documents. It reports how
 // many products were scanned and how many of those scans failed, so the caller
 // can refuse to install a badly degraded generation.
-func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, error) {
+func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, corpusCoverage, error) {
+	coverage := corpusCoverage{}
 	products, err := s.listAll(ctx, "/products", url.Values{}, s.indexOpts.MaxProducts)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("list products: %w", err)
+		return nil, 0, 0, coverage, fmt.Errorf("list products: %w", err)
+	}
+	coverage.ProductListTruncated = products.Truncated
+	if products.Truncated {
+		s.logger.WarnContext(ctx, "bug index: product list truncated, some products were never scanned",
+			"indexed_products", len(products.Records), "reported_total", products.Total,
+			"max_products", s.indexOpts.MaxProducts, "reason", products.TruncationReason)
 	}
 
 	var scanned, failed int
@@ -185,9 +207,12 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 	// Scan products concurrently: 600+ products at ~0.2s per page made a
 	// sequential build take minutes, during which the corpus is stale.
 	type productScan struct {
-		docs    []bugindex.Doc
-		err     error
-		counted bool
+		docs      []bugindex.Doc
+		err       error
+		counted   bool
+		truncated bool
+		total     int
+		reason    string
 	}
 
 	recs := products.Records
@@ -208,6 +233,7 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 
 			return
 		}
+		scans[i].truncated, scans[i].total, scans[i].reason = bugs.Truncated, bugs.Total, bugs.TruncationReason
 
 		docs := make([]bugindex.Doc, 0, len(bugs.Records))
 
@@ -258,6 +284,13 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 
 			continue
 		}
+		if scans[i].truncated {
+			coverage.TruncatedProducts++
+			s.logger.WarnContext(ctx, "bug index: product bug list truncated, historical records may be missing",
+				"product", fieldInt(recs[i], "id"), "indexed_bugs", len(scans[i].docs),
+				"reported_total", scans[i].total, "max_bugs_per_product", s.indexOpts.MaxBugsPerProduct,
+				"reason", scans[i].reason)
+		}
 
 		for _, d := range scans[i].docs {
 			byID[d.ID] = d
@@ -269,7 +302,8 @@ func (s *Service) buildCorpus(ctx context.Context) ([]bugindex.Doc, int, int, er
 		docs = append(docs, d)
 	}
 
-	return docs, scanned, failed, nil
+	coverage.FailedProducts = failed
+	return docs, scanned, failed, coverage, nil
 }
 
 // SimilarBug is one historical record judged similar to a reported symptom.
@@ -296,17 +330,22 @@ type SimilarBug struct {
 
 // IndexStatus describes the corpus a lookup ran against.
 type IndexStatus struct {
-	Documents int     `json:"documents"`
-	BuiltAt   string  `json:"builtAt,omitempty"`
-	AgeHours  float64 `json:"ageHours,omitempty"`
+	Documents            int     `json:"documents"`
+	BuiltAt              string  `json:"builtAt,omitempty"`
+	AgeHours             float64 `json:"ageHours,omitempty"`
+	Partial              bool    `json:"partial,omitempty"`
+	ProductListTruncated bool    `json:"productListTruncated,omitempty"`
+	TruncatedProducts    int     `json:"truncatedProducts,omitempty"`
+	FailedProducts       int     `json:"failedProducts,omitempty"`
+	LastRefreshFailed    bool    `json:"lastRefreshFailed,omitempty"`
 }
 
 // HistoryResult is the payload of the historical symptom lookup.
 type HistoryResult struct {
-	Symptom  string       `json:"symptom"`
-	Index    IndexStatus  `json:"index"`
-	Terms    int          `json:"queryTerms"`
-	Returned int          `json:"returned"`
+	Symptom  string      `json:"symptom"`
+	Index    IndexStatus `json:"index"`
+	Terms    int         `json:"queryTerms"`
+	Returned int         `json:"returned"`
 	// Hidden counts candidates the caller may not read. The corpus-wide match
 	// count is deliberately not reported: it was computed before any filtering
 	// or permission check, so it answered "how many bugs anywhere in ZenTao
@@ -411,6 +450,12 @@ func (s *Service) FindSimilarBugs(ctx context.Context, req HistoryRequest) (*His
 		Terms:   stats.Terms,
 		Bugs:    []SimilarBug{},
 	}
+	if out.Index.Partial {
+		out.Notes = append(out.Notes, "索引覆盖不完整：部分产品或 Bug 被截断，或产品读取失败；未命中不代表历史上不存在。请维护者检查抓取上限、分页和索引账号权限。")
+	}
+	if out.Index.LastRefreshFailed {
+		out.Notes = append(out.Notes, "最近一次索引刷新失败，当前继续使用上一代索引；请维护者检查索引构建日志。")
+	}
 
 	s.logger.InfoContext(ctx, "similar bug search",
 		"terms", stats.Terms,
@@ -457,6 +502,13 @@ func (s *Service) FindSimilarBugs(ctx context.Context, req HistoryRequest) (*His
 
 func (s *Service) indexStatus() IndexStatus {
 	status := IndexStatus{Documents: s.index.Len()}
+	if state := s.buildState.Load(); state != nil {
+		status.ProductListTruncated = state.coverage.ProductListTruncated
+		status.TruncatedProducts = state.coverage.TruncatedProducts
+		status.FailedProducts = state.coverage.FailedProducts
+		status.Partial = status.ProductListTruncated || status.TruncatedProducts > 0 || status.FailedProducts > 0
+		status.LastRefreshFailed = state.err != nil
+	}
 
 	if built := s.index.BuiltAt(); !built.IsZero() {
 		status.BuiltAt = built.In(currentLocation()).Format("2006-01-02 15:04:05")

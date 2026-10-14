@@ -15,6 +15,10 @@
 -  **禅道复合工具**：内置查 Bug、AI 评分、问题分析、质量统计、个人工作量等 `zentao_*` 工具，
    详见 [docs/zentao-mcp-extensions.md](docs/zentao-mcp-extensions.md)
 
+当前团队安装与公网接入见 [使用说明](docs/zentao-mcp-usage.md)，
+内外两套服务器的发布、凭据更新和验收见 [云上部署说明](deploy/cloud/README.md)。
+公网默认地址为 `https://neoflow-cn.neo-net.com/zentao-mcp/mcp`，需要入口密钥与个人禅道凭据。
+
 **2. 技术栈：**
 
 - Go 1.24+
@@ -83,7 +87,7 @@ server 级可选开关：
 | 配置项 | 默认 | 说明 |
 | :--- | :--- | :--- |
 | `skip_deprecated` | `false` | 不注册 OpenAPI 中 `deprecated: true` 的操作。随附的禅道 12.3 文档用它标记会返回 404 的 12 个路由，开启后可减少必然失败的工具 |
-| `zentao_extensions` | `false` | 注册 6 个禅道复合工具。仅当上游确实是禅道时开启 |
+| `zentao_extensions` | `false` | 注册 6 个基础复合工具；配置索引服务账号后另加历史 Bug 检索，共 7 个。仅当上游确实是禅道时开启 |
 
 ### 3. 运行
 
@@ -109,7 +113,7 @@ task package        # 打包所有平台
 ZENTAO_DOMAIN="http://您的禅道域名"
 
 # 禅道API
-curl -X POST "${ZENTAO_DOMAIN}/api.php/v2/user/login" \
+curl -X POST "${ZENTAO_DOMAIN}/biz/api.php/v1/tokens" \
    -H "Content-Type: application/json" \
    -d '{"account":"用户名","password":"密码"}'
 ```
@@ -137,7 +141,7 @@ curl -X POST "${ZENTAO_DOMAIN}/api.php/v2/user/login" \
       "timeout": 60000,
       "headers": {
         // headers中优先级: token > Authorization
-        "token": "318511bf858e6ee9e62ce4135990098d",
+        "token": "<用户自己的禅道 token>",
         "Authorization": ""
       }
     },
@@ -147,7 +151,7 @@ curl -X POST "${ZENTAO_DOMAIN}/api.php/v2/user/login" \
       "url": "http://127.0.0.1:9090/gitfox/sse",
       "timeout": 60000,
       "headers": {
-        "Authorization": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3NzU2MjMwMDMsImlzcyI6IkdpdGZveCIsInBpZCI6NSwidGtuIjp7InR5cCI6InBhdCIsImlkIjo1fX0.JLjiPLmEXBmAvppW9-Rz8V_wqo5EWn6M_x2b8aDStI4"
+        "Authorization": "<对应服务的访问凭据>"
       }
     }
   }

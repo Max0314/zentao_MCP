@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,24 +27,64 @@ const maxLoginResponseSize = 1 << 20
 const (
 	loginBackoffBase = 15 * time.Second
 	loginBackoffMax  = 10 * time.Minute
+	loginTimeout     = 30 * time.Second
 )
+
+// ZentaoAuthOptions bounds cached credentials and failed upstream logins.
+// FailureLimit defaults to two: a third rejected login can lock a ZenTao
+// account. Deployments with a different policy can tune the window and limit.
+type ZentaoAuthOptions struct {
+	FailureLimit    int
+	FailureWindow   time.Duration
+	TokenTTL        time.Duration
+	FailureTTL      time.Duration
+	MaxCacheEntries int
+}
+
+func (o ZentaoAuthOptions) normalized() ZentaoAuthOptions {
+	if o.FailureLimit <= 0 {
+		o.FailureLimit = 2
+	}
+	if o.FailureWindow <= 0 {
+		o.FailureWindow = 10 * time.Minute
+	}
+	if o.TokenTTL <= 0 {
+		o.TokenTTL = 24 * time.Hour
+	}
+	if o.FailureTTL <= 0 {
+		o.FailureTTL = 30 * time.Minute
+	}
+	if o.MaxCacheEntries <= 0 {
+		o.MaxCacheEntries = 2048
+	}
+	return o
+}
 
 type tokenEntry struct {
 	token        string
 	passwordHash [32]byte
+	expiresAt    time.Time
+	lastUsed     time.Time
 }
 
 // failureEntry suppresses login attempts for an account that was just rejected.
 type failureEntry struct {
-	err   error
-	until time.Time
+	err       error
+	until     time.Time
+	count     int
+	expiresAt time.Time
+}
+
+type accountFailureEntry struct {
 	count int
+	until time.Time
 }
 
 // ZentaoLoginError represents a non-successful Zentao login response.
 type ZentaoLoginError struct {
 	StatusCode int
 	Body       []byte
+	RetryAfter time.Duration
 }
 
 func (e *ZentaoLoginError) Error() string {
@@ -56,25 +97,35 @@ type ZentaoTokenManager struct {
 	client  *http.Client
 	logger  *slog.Logger
 
-	mu       sync.Mutex
-	tokens   map[string]tokenEntry
-	failures map[string]failureEntry
-	now      func() time.Time
+	mu              sync.Mutex
+	tokens          map[string]tokenEntry
+	failures        map[string]failureEntry
+	accountFailures map[string]accountFailureEntry
+	inflight        map[string]chan struct{}
+	opts            ZentaoAuthOptions
+	now             func() time.Time
 }
 
 // NewZentaoTokenManager creates a token manager for one upstream Zentao base URL.
-func NewZentaoTokenManager(baseURL string, client *http.Client) *ZentaoTokenManager {
+func NewZentaoTokenManager(baseURL string, client *http.Client, options ...ZentaoAuthOptions) *ZentaoTokenManager {
 	if client == nil {
 		client = http.DefaultClient
 	}
 
+	var opts ZentaoAuthOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	return &ZentaoTokenManager{
-		baseURL:  baseURL,
-		client:   client,
-		logger:   slog.Default().With("component", "middleware.zentao_auth"),
-		tokens:   make(map[string]tokenEntry),
-		failures: make(map[string]failureEntry),
-		now:      time.Now,
+		baseURL:         baseURL,
+		client:          client,
+		logger:          slog.Default().With("component", "middleware.zentao_auth"),
+		tokens:          make(map[string]tokenEntry),
+		failures:        make(map[string]failureEntry),
+		accountFailures: make(map[string]accountFailureEntry),
+		inflight:        make(map[string]chan struct{}),
+		opts:            opts.normalized(),
+		now:             time.Now,
 	}
 }
 
@@ -97,48 +148,112 @@ func (m *ZentaoTokenManager) Refresh(ctx context.Context, creds ZentaoCredential
 func (m *ZentaoTokenManager) token(ctx context.Context, creds ZentaoCredentials, stale string) (string, error) {
 	hash := sha256.Sum256([]byte(creds.Password))
 	key := m.cacheKey(creds.Account)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Serve the cache when it holds a token this caller has not already seen
-	// fail. On a refresh that means somebody else won the race.
-	if entry, ok := m.tokens[key]; ok && entry.passwordHash == hash && entry.token != stale {
-		return entry.token, nil
-	}
-
-	// The backoff is keyed by credential, not just by account: someone who
-	// corrects a mistyped password must get a fresh attempt immediately
-	// instead of waiting out a penalty earned by the wrong one.
 	fkey := failureKey(key, hash)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		m.mu.Lock()
+		now := m.now()
+		m.cleanupLocked(now)
+		// Existing valid sessions remain usable even if another client has
+		// exhausted this account's login budget with incorrect credentials.
+		if entry, ok := m.tokens[key]; ok && entry.passwordHash == hash && entry.token != stale {
+			entry.lastUsed = now
+			m.tokens[key] = entry
+			m.mu.Unlock()
+			return entry.token, nil
+		}
+		if f, ok := m.accountFailures[key]; ok && f.count >= m.opts.FailureLimit {
+			m.mu.Unlock()
+			return "", authThrottleError("该账号登录失败次数达到保护上限，请检查正式/测试环境和密码，冷却后再试", f.until.Sub(now))
+		}
+		if f, ok := m.failures[fkey]; ok && now.Before(f.until) {
+			m.mu.Unlock()
+			return "", f.err
+		}
+		// Coalesce by account, including callers supplying different passwords.
+		// Waiters can cancel and other accounts never wait on a network login.
+		if done, ok := m.inflight[key]; ok {
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		if _, ok := m.accountFailures[key]; !ok {
+			// Never evict an active protection bucket: eviction would reset its
+			// budget and let a flood of new account names bypass the guard.
+			if len(m.accountFailures) >= m.opts.MaxCacheEntries {
+				wait := m.opts.FailureWindow
+				for _, f := range m.accountFailures {
+					if d := f.until.Sub(now); d < wait {
+						wait = d
+					}
+				}
+				m.mu.Unlock()
+				return "", authThrottleError("登录保护缓存已满，请稍后重试", wait)
+			}
+			m.accountFailures[key] = accountFailureEntry{until: now.Add(m.opts.FailureWindow)}
+		}
+		done := make(chan struct{})
+		m.inflight[key] = done
+		m.mu.Unlock()
 
-	if f, ok := m.failures[fkey]; ok && m.now().Before(f.until) {
-		m.logger.WarnContext(ctx, "skipping zentao login, still backing off",
-			"account", creds.Account,
-			"retry_in", f.until.Sub(m.now()).Round(time.Second).String(),
-		)
+		loginCtx, cancel := context.WithTimeout(ctx, loginTimeout)
+		token, err := m.login(loginCtx, creds)
+		cancel()
 
-		return "", f.err
+		m.mu.Lock()
+		now = m.now()
+		if err != nil {
+			// A wrong password must not evict a working token for this account.
+			if entry, ok := m.tokens[key]; ok && entry.passwordHash == hash {
+				delete(m.tokens, key)
+			}
+			if ctx.Err() == nil {
+				m.recordFailure(ctx, fkey, creds.Account, err, now)
+			}
+			var rejected *ZentaoLoginError
+			if errors.As(err, &rejected) && (rejected.StatusCode == 400 || rejected.StatusCode == 401 || rejected.StatusCode == 403) {
+				f := m.accountFailures[key]
+				if !now.Before(f.until) {
+					f = accountFailureEntry{until: now.Add(m.opts.FailureWindow)}
+				}
+				f.count++
+				// Measure the quiet period from the last real rejected login.
+				// Locally suppressed requests never move this deadline.
+				f.until = now.Add(m.opts.FailureWindow)
+				m.accountFailures[key] = f
+				if f.count >= m.opts.FailureLimit {
+					m.logger.WarnContext(ctx, "zentao account login protection activated",
+						"account", creds.Account, "failures", f.count, "retry_in", m.opts.FailureWindow.String())
+				}
+			} else if m.accountFailures[key].count == 0 {
+				delete(m.accountFailures, key)
+			}
+		} else {
+			delete(m.accountFailures, key)
+			for k := range m.failures {
+				if strings.HasPrefix(k, key+"#") {
+					delete(m.failures, k)
+				}
+			}
+			m.makeTokenRoomLocked(key)
+			m.tokens[key] = tokenEntry{token: token, passwordHash: hash, expiresAt: now.Add(m.opts.TokenTTL), lastUsed: now}
+		}
+		delete(m.inflight, key)
+		close(done)
+		m.mu.Unlock()
+		return token, err
 	}
-
-	token, err := m.login(ctx, creds)
-	if err != nil {
-		delete(m.tokens, key)
-		m.recordFailure(ctx, fkey, creds.Account, err)
-
-		return "", err
-	}
-
-	delete(m.failures, fkey)
-
-	m.tokens[key] = tokenEntry{token: token, passwordHash: hash}
-
-	return token, nil
 }
 
 // recordFailure holds off further logins for this account, doubling the wait
 // on each consecutive rejection.
-func (m *ZentaoTokenManager) recordFailure(ctx context.Context, key, account string, err error) {
+func (m *ZentaoTokenManager) recordFailure(ctx context.Context, key, account string, err error, now time.Time) {
 	prev := m.failures[key]
 
 	wait := loginBackoffBase << min(prev.count, 6)
@@ -146,13 +261,67 @@ func (m *ZentaoTokenManager) recordFailure(ctx context.Context, key, account str
 		wait = loginBackoffMax
 	}
 
-	m.failures[key] = failureEntry{err: err, until: m.now().Add(wait), count: prev.count + 1}
+	if _, exists := m.failures[key]; !exists && len(m.failures) >= m.opts.MaxCacheEntries {
+		var oldest string
+		for k, f := range m.failures {
+			if oldest == "" || f.expiresAt.Before(m.failures[oldest].expiresAt) {
+				oldest = k
+			}
+		}
+		delete(m.failures, oldest)
+	}
+	m.failures[key] = failureEntry{err: err, until: now.Add(wait), count: prev.count + 1, expiresAt: now.Add(max(m.opts.FailureTTL, wait))}
 
 	m.logger.WarnContext(ctx, "zentao login failed, backing off",
 		"account", account,
 		"consecutive_failures", prev.count+1,
 		"retry_in", wait.String(),
 	)
+}
+
+// Cleanup expires idle protection and cache entries. It also runs on lookup,
+// so no background goroutine or timer needs to survive a client's lifetime.
+func (m *ZentaoTokenManager) Cleanup() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(m.now())
+}
+
+func (m *ZentaoTokenManager) cleanupLocked(now time.Time) {
+	for k, t := range m.tokens {
+		if !now.Before(t.expiresAt) {
+			delete(m.tokens, k)
+		}
+	}
+	for k, f := range m.failures {
+		if !now.Before(f.expiresAt) {
+			delete(m.failures, k)
+		}
+	}
+	for k, f := range m.accountFailures {
+		if _, busy := m.inflight[k]; !busy && !now.Before(f.until) {
+			delete(m.accountFailures, k)
+		}
+	}
+}
+
+func (m *ZentaoTokenManager) makeTokenRoomLocked(key string) {
+	if _, exists := m.tokens[key]; exists || len(m.tokens) < m.opts.MaxCacheEntries {
+		return
+	}
+	var oldest string
+	for k, t := range m.tokens {
+		if oldest == "" || t.lastUsed.Before(m.tokens[oldest].lastUsed) {
+			oldest = k
+		}
+	}
+	delete(m.tokens, oldest)
+}
+
+func authThrottleError(message string, wait time.Duration) *ZentaoLoginError {
+	seconds := max(1, int((wait+time.Second-1)/time.Second))
+	body, _ := json.Marshal(map[string]any{"error": message, "retryAfterSeconds": seconds})
+	return &ZentaoLoginError{StatusCode: http.StatusTooManyRequests, Body: body, RetryAfter: time.Duration(seconds) * time.Second}
 }
 
 // failureKey scopes a login backoff to one account-and-password pair.
@@ -228,16 +397,30 @@ func (m *ZentaoTokenManager) loginAt(ctx context.Context, creds ZentaoCredential
 			"status", resp.StatusCode,
 		)
 
+		// This response is retained in the failure cache. Bound each entry as
+		// well as the number of entries; an upstream HTML error can be large.
+		if len(respBody) > 4096 {
+			respBody, _ = json.Marshal(map[string]any{"error": "禅道登录失败，过长的响应内容已省略", "status": resp.StatusCode})
+		}
 		return "", &ZentaoLoginError{StatusCode: resp.StatusCode, Body: respBody}
 	}
 
 	var data struct {
-		Status string `json:"status"`
-		Token  string `json:"token"`
+		Status string          `json:"status"`
+		Token  string          `json:"token"`
+		Error  json.RawMessage `json:"error"`
 	}
 
 	if err := json.Unmarshal(respBody, &data); err != nil {
 		return "", fmt.Errorf("parse login response: %w", err)
+	}
+	status := strings.ToLower(data.Status)
+	if status == "fail" || status == "failed" || status == "error" ||
+		(len(data.Error) > 0 && string(data.Error) != "null" && string(data.Error) != `""` && string(data.Error) != "false") {
+		if len(respBody) > 4096 {
+			respBody = []byte(`{"error":"禅道登录被拒绝，过长的响应内容已省略"}`)
+		}
+		return "", &ZentaoLoginError{StatusCode: http.StatusUnauthorized, Body: respBody}
 	}
 
 	if data.Token == "" {

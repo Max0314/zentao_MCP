@@ -9,6 +9,8 @@ ENV CGO_ENABLED=0
 RUN go build -o zentao-mcp cmd/app/*
 
 FROM alpine:3.21
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
 # tzdata is required for the timezone setting: ZenTao returns object dates as
 # UTC instants, so turning them into calendar dates needs the server's real
 # zone. Without it time.LoadLocation("Asia/Shanghai") fails.

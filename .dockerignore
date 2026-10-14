@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+config.yaml
+.codex-backups
+.deployed-revision
+.claude
+.codex
+bin
+tmp
+coverage.out
+*.pem
+*.key
+.idea
+.vscode

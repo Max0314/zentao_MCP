@@ -33,9 +33,10 @@ type Service struct {
 
 // buildState is the result of one index build attempt.
 type buildState struct {
-	done bool
-	err  error
-	at   time.Time
+	done     bool
+	err      error
+	at       time.Time
+	coverage corpusCoverage
 }
 
 // New creates a ZenTao composite Service on top of the shared proxy repository.
